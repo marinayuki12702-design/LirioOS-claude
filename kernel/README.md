@@ -2,9 +2,9 @@
 
 Kernel propio, escrito en C y ensamblador para x86 de 32 bits. Arranca con GRUB (Multiboot) y le pide un modo gráfico de 1024x768 con 32 bits de color.
 
-![Vista previa del escritorio](../docs/vista-previa-gui.png)
+![Captura real del kernel arrancando en QEMU](../capturas/ayuda.png)
 
-*Vista previa generada con el mismo código de dibujo (`gui.h`). Las capturas del arranque real las genera el flujo de GitHub y se guardan como artefacto `LirioOS-kernel-capturas`.*
+*Captura real del kernel arrancando en QEMU, generada automáticamente por el flujo de GitHub en cada cambio (carpeta `capturas/`).*
 
 ## Qué hace hoy
 
