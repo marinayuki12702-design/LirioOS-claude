@@ -8,6 +8,9 @@ on:
       - "kernel/**"
       - ".github/workflows/build-kernel.yml"
 
+permissions:
+  contents: write
+
 jobs:
   kernel:
     runs-on: ubuntu-latest
@@ -41,6 +44,17 @@ jobs:
           mkdir -p ../capturas
           convert /tmp/arranque.ppm ../capturas/arranque.png
           convert /tmp/ayuda.ppm ../capturas/ayuda.png
+
+      - name: Guardar las capturas en el repositorio
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add capturas/*.png
+          if ! git diff --cached --quiet; then
+            git commit -m "Capturas del arranque real [skip ci]"
+            git pull --rebase
+            git push
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
