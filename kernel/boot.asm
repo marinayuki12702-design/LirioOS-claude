@@ -1,0 +1,34 @@
+; Punto de entrada de LirioOS. GRUB carga este archivo mediante Multiboot.
+MBALIGN  equ 1 << 0
+MEMINFO  equ 1 << 1
+FLAGS    equ MBALIGN | MEMINFO
+MAGIC    equ 0x1BADB002
+CHECKSUM equ -(MAGIC + FLAGS)
+
+section .multiboot
+align 4
+    dd MAGIC
+    dd FLAGS
+    dd CHECKSUM
+
+section .bss
+align 16
+stack_bottom:
+    resb 16384
+stack_top:
+
+section .text
+global _start
+extern kmain
+
+_start:
+    mov esp, stack_top
+    push ebx            ; puntero a la información de Multiboot
+    push eax            ; número mágico del cargador
+    call kmain
+.hang:
+    cli
+    hlt
+    jmp .hang
+
+section .note.GNU-stack noalloc noexec nowrite progbits

@@ -35,4 +35,4 @@ Usuario del modo live: `lirio` (contraseña `live`).
 
 - Tema de colores morado propio para ventanas y paneles.
 - Configurar el dock con los iconos de las apps.
-- Kernel propio mínimo como proyecto aparte.
+- Kernel propio mínimo en C: ya hay una primera versión en `kernel/` (ver `kernel/README.md`).

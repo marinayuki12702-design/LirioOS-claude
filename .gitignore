@@ -1,0 +1,4 @@
+kernel/*.o
+kernel/*.bin
+kernel/iso/
+kernel/*.iso

@@ -1,0 +1,38 @@
+name: Compilar kernel de LirioOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "kernel/**"
+      - ".github/workflows/build-kernel.yml"
+
+jobs:
+  kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar herramientas
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm gcc-multilib grub-pc-bin xorriso mtools qemu-system-x86
+
+      - name: Compilar kernel y ISO
+        working-directory: kernel
+        run: |
+          make
+          make iso
+
+      - name: Prueba de arranque (QEMU, sin pantalla)
+        working-directory: kernel
+        run: |
+          timeout 20 qemu-system-i386 -cdrom LirioOS-kernel.iso -display none \
+            -serial none -monitor none -no-reboot || test $? -eq 124
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LirioOS-kernel-iso
+          path: kernel/LirioOS-kernel.iso
+          if-no-files-found: error
