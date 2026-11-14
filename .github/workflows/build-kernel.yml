@@ -17,7 +17,7 @@ jobs:
       - name: Instalar herramientas
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm gcc-multilib grub-pc-bin xorriso mtools qemu-system-x86
+          sudo apt-get install -y nasm gcc-multilib grub-pc-bin xorriso mtools qemu-system-x86 imagemagick
 
       - name: Compilar kernel y ISO
         working-directory: kernel
@@ -25,14 +25,31 @@ jobs:
           make
           make iso
 
-      - name: Prueba de arranque (QEMU, sin pantalla)
+      - name: Arrancar en QEMU y sacar capturas de pantalla
         working-directory: kernel
         run: |
-          timeout 20 qemu-system-i386 -cdrom LirioOS-kernel.iso -display none \
-            -serial none -monitor none -no-reboot || test $? -eq 124
+          (
+            sleep 12
+            echo "screendump /tmp/arranque.ppm"
+            sleep 1
+            for k in a y u d a ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 2
+            echo "screendump /tmp/ayuda.ppm"
+            sleep 1
+            echo "quit"
+          ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -m 256 -vga std -display none -monitor stdio -no-reboot
+          mkdir -p ../capturas
+          convert /tmp/arranque.ppm ../capturas/arranque.png
+          convert /tmp/ayuda.ppm ../capturas/ayuda.png
 
       - uses: actions/upload-artifact@v4
         with:
           name: LirioOS-kernel-iso
           path: kernel/LirioOS-kernel.iso
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LirioOS-kernel-capturas
+          path: capturas/*.png
           if-no-files-found: error

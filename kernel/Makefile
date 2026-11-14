@@ -1,7 +1,7 @@
 CC      = gcc
 AS      = nasm
 LD      = ld
-CFLAGS  = -m32 -ffreestanding -fno-stack-protector -fno-pic -fno-pie -fno-builtin -O2 -Wall -Wextra -nostdlib
+CFLAGS  = -m32 -ffreestanding -fno-stack-protector -fno-pic -fno-pie -fno-builtin -fno-tree-loop-distribute-patterns -O2 -Wall -Wextra -nostdlib
 LDFLAGS = -m elf_i386 -T linker.ld -nostdlib
 
 all: lirioos-kernel.bin
@@ -9,10 +9,10 @@ all: lirioos-kernel.bin
 boot.o: boot.asm
 	$(AS) -f elf32 boot.asm -o boot.o
 
-kernel.o: kernel.c
+kernel.o: kernel.c gui.h font.h
 	$(CC) $(CFLAGS) -c kernel.c -o kernel.o
 
-lirioos-kernel.bin: boot.o kernel.o linker.ld
+lirioos-kernel.bin: boot.o kernel.o linker.ld gui.h font.h
 	$(LD) $(LDFLAGS) boot.o kernel.o -o lirioos-kernel.bin
 
 # Genera una ISO arrancable (necesita grub-mkrescue y xorriso)
@@ -23,8 +23,8 @@ iso: lirioos-kernel.bin
 	grub-mkrescue -o LirioOS-kernel.iso iso
 
 # Prueba rápida si tienes QEMU instalado
-run: lirioos-kernel.bin
-	qemu-system-i386 -kernel lirioos-kernel.bin
+run: iso
+	qemu-system-i386 -cdrom LirioOS-kernel.iso
 
 clean:
 	rm -rf *.o *.bin iso *.iso
