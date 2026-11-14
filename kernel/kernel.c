@@ -223,6 +223,7 @@ struct mb_info {
     u32 fb_addr_lo, fb_addr_hi;
     u32 fb_pitch, fb_width, fb_height;
     u8  fb_bpp, fb_type;
+    u16 reserved;           /* GRUB alinea a 4 bytes la información de color */
     u8  red_pos, red_size, green_pos, green_size, blue_pos, blue_size;
 };
 
@@ -250,11 +251,6 @@ static void print_video_info(const struct mb_info *mb)
     con_print_num(mb->green_pos);
     con_print(" azul=", ATTR_SOFT);
     con_print_num(mb->blue_pos);
-    con_print("\nbytes 108-119: ", ATTR_SOFT);
-    for (int i = 108; i < 120; i++) {
-        con_print_num(((const u8 *)mb)[i]);
-        con_print(" ", ATTR_SOFT);
-    }
     con_print("\n\n", ATTR_SOFT);
 }
 
