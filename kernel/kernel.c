@@ -250,6 +250,11 @@ static void print_video_info(const struct mb_info *mb)
     con_print_num(mb->green_pos);
     con_print(" azul=", ATTR_SOFT);
     con_print_num(mb->blue_pos);
+    con_print("\nbytes 108-119: ", ATTR_SOFT);
+    for (int i = 108; i < 120; i++) {
+        con_print_num(((const u8 *)mb)[i]);
+        con_print(" ", ATTR_SOFT);
+    }
     con_print("\n\n", ATTR_SOFT);
 }
 
