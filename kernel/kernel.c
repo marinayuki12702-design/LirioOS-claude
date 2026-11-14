@@ -217,15 +217,6 @@ static void run_command(const char *line)
 
 /* ---------- Arranque ---------- */
 
-/* Mensaje de emergencia en modo texto, por si GRUB no pudo dar un modo gráfico */
-static void text_fatal(const char *msg)
-{
-    volatile u16 *vga = (volatile u16 *)0xB8000;
-    for (int i = 0; i < 80 * 25; i++) vga[i] = (u16)(' ' | (0x5F << 8));
-    for (int i = 0; msg[i] && i < 80; i++) vga[i] = (u16)((u8)msg[i] | (0x5F << 8));
-    for (;;) __asm__ volatile ("cli; hlt");
-}
-
 struct mb_info {
     u32 flags;
     u8  pad[84];            /* campos que no usamos hasta el framebuffer */
@@ -234,6 +225,42 @@ struct mb_info {
     u8  fb_bpp, fb_type;
     u8  red_pos, red_size, green_pos, green_size, blue_pos, blue_size;
 };
+
+
+static void con_print_num(u32 n)
+{
+    char buf[12];
+    int i = 0;
+    if (n == 0) buf[i++] = '0';
+    while (n > 0) { buf[i++] = (char)('0' + n % 10); n /= 10; }
+    while (i > 0) con_putc((u8)buf[--i], ATTR_SOFT);
+}
+
+static void print_video_info(const struct mb_info *mb)
+{
+    con_print("Pantalla: ", ATTR_SOFT);
+    con_print_num(mb->fb_width);
+    con_print("x", ATTR_SOFT);
+    con_print_num(mb->fb_height);
+    con_print("x", ATTR_SOFT);
+    con_print_num(mb->fb_bpp);
+    con_print("  rojo=", ATTR_SOFT);
+    con_print_num(mb->red_pos);
+    con_print(" verde=", ATTR_SOFT);
+    con_print_num(mb->green_pos);
+    con_print(" azul=", ATTR_SOFT);
+    con_print_num(mb->blue_pos);
+    con_print("\n\n", ATTR_SOFT);
+}
+
+/* Mensaje de emergencia en modo texto, por si GRUB no pudo dar un modo gráfico */
+static void text_fatal(const char *msg)
+{
+    volatile u16 *vga = (volatile u16 *)0xB8000;
+    for (int i = 0; i < 80 * 25; i++) vga[i] = (u16)(' ' | (0x5F << 8));
+    for (int i = 0; msg[i] && i < 80; i++) vga[i] = (u16)((u8)msg[i] | (0x5F << 8));
+    for (;;) __asm__ volatile ("cli; hlt");
+}
 
 void kmain(u32 magic, u32 info)
 {
@@ -249,6 +276,7 @@ void kmain(u32 magic, u32 info)
 
     draw_desktop();
     banner();
+    print_video_info(mb);
 
     for (;;) {
         con_print("lirio> ", ATTR_PROMPT);
