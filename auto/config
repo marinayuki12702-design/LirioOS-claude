@@ -1,0 +1,15 @@
+#!/bin/sh
+# Configuración de live-build para LirioOS (base Debian 13 "trixie", escritorio XFCE).
+set -e
+
+lb config noauto \
+    --distribution trixie \
+    --architectures amd64 \
+    --archive-areas "main contrib non-free-firmware" \
+    --binary-images iso-hybrid \
+    --debian-installer live \
+    --iso-application "LirioOS" \
+    --iso-volume "LirioOS" \
+    --iso-publisher "LirioOS" \
+    --bootappend-live "boot=live components quiet splash username=lirio hostname=lirioos locales=es_ES.UTF-8 keyboard-layouts=es timezone=Europe/Madrid" \
+    "${@}"

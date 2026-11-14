@@ -1,0 +1,48 @@
+name: Compilar ISO de LirioOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "README.md"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+      options: --privileged
+    steps:
+      - name: Instalar herramientas
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            live-build debootstrap squashfs-tools xorriso mtools dosfstools \
+            syslinux syslinux-utils isolinux grub-pc-bin grub-efi-amd64-bin \
+            librsvg2-bin git ca-certificates xz-utils
+
+      - uses: actions/checkout@v4
+
+      - name: Generar imágenes de marca
+        run: |
+          rsvg-convert -w 1920 -h 1080 branding/wallpaper.svg \
+            -o config/includes.chroot/usr/share/backgrounds/lirioos.png
+
+      - name: Configurar y compilar
+        run: |
+          chmod +x auto/config config/hooks/normal/*.hook.chroot
+          lb clean --purge || true
+          lb config
+          lb build
+
+      - name: Preparar la ISO
+        run: |
+          ls -lh *.iso
+          mv live-image-amd64.hybrid.iso LirioOS.iso
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LirioOS-iso
+          path: LirioOS.iso
+          if-no-files-found: error

@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f3ecff"/>
+      <stop offset="0.55" stop-color="#d9c8ff"/>
+      <stop offset="1" stop-color="#b79bf2"/>
+    </linearGradient>
+    <linearGradient id="wave1" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#c9b2fa" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#9b7be6" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="wave2" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e6dbff" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#bfa6f5" stop-opacity="0.8"/>
+    </linearGradient>
+    <linearGradient id="wave3" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8d6bdc" stop-opacity="0.75"/>
+      <stop offset="1" stop-color="#6f4cc4" stop-opacity="0.85"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.78" cy="0.28" r="0.5">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.75"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <path id="spark" d="M0,-1 C0.08,-0.3 0.3,-0.08 1,0 C0.3,0.08 0.08,0.3 0,1 C-0.08,0.3 -0.3,0.08 -1,0 C-0.3,-0.08 -0.08,-0.3 0,-1 Z"/>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#bg)"/>
+  <rect width="1920" height="1080" fill="url(#glow)"/>
+
+  <path d="M0,640 C300,520 520,760 860,680 C1200,600 1500,430 1920,520 L1920,1080 L0,1080 Z" fill="url(#wave2)"/>
+  <path d="M0,760 C260,660 560,860 900,800 C1260,736 1560,600 1920,690 L1920,1080 L0,1080 Z" fill="url(#wave1)"/>
+  <path d="M0,880 C320,800 620,960 980,910 C1320,864 1620,780 1920,840 L1920,1080 L0,1080 Z" fill="url(#wave3)"/>
+
+  <path d="M0,700 C300,590 560,810 900,740 C1260,666 1540,500 1920,600" fill="none" stroke="#ffffff" stroke-opacity="0.8" stroke-width="3"/>
+  <path d="M0,820 C280,720 580,920 940,860 C1290,802 1590,690 1920,770" fill="none" stroke="#ffffff" stroke-opacity="0.45" stroke-width="2"/>
+
+  <g fill="#ffffff">
+    <use href="#spark" transform="translate(1630,250) scale(46)" opacity="0.95"/>
+    <use href="#spark" transform="translate(560,380) scale(34)" opacity="0.9"/>
+    <use href="#spark" transform="translate(1000,760) scale(60)" opacity="0.95"/>
+    <use href="#spark" transform="translate(1390,170) scale(16)" opacity="0.85"/>
+    <use href="#spark" transform="translate(360,170) scale(11)" opacity="0.8"/>
+    <use href="#spark" transform="translate(1180,520) scale(14)" opacity="0.8"/>
+    <use href="#spark" transform="translate(1780,610) scale(20)" opacity="0.85"/>
+    <use href="#spark" transform="translate(240,600) scale(9)" opacity="0.7"/>
+    <circle cx="880" cy="250" r="3" opacity="0.7"/>
+    <circle cx="1500" cy="420" r="2.5" opacity="0.7"/>
+    <circle cx="140" cy="330" r="2.5" opacity="0.6"/>
+    <circle cx="1720" cy="90" r="2" opacity="0.7"/>
+    <circle cx="700" cy="120" r="2" opacity="0.6"/>
+  </g>
+
+  <text x="48" y="1000" font-family="'Noto Sans','DejaVu Sans',sans-serif" font-size="96" font-weight="700" fill="#ffffff" fill-opacity="0.92" letter-spacing="2">LirioOS</text>
+</svg>

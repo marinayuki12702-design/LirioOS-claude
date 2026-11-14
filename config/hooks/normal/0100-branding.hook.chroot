@@ -1,0 +1,25 @@
+#!/bin/sh
+# Identidad de LirioOS dentro del sistema (se ejecuta dentro del chroot durante la compilación).
+set -e
+
+cat > /usr/lib/os-release <<'EOF'
+PRETTY_NAME="LirioOS"
+NAME="LirioOS"
+VERSION="0.1"
+VERSION_ID="0.1"
+ID=lirioos
+ID_LIKE=debian
+HOME_URL="https://github.com/marinayuki12702-design/LirioOS-claude"
+EOF
+
+printf 'LirioOS \\n \\l\n\n' > /etc/issue
+printf 'LirioOS\n' > /etc/issue.net
+
+# Fondo del inicio de sesión
+mkdir -p /etc/lightdm/lightdm-gtk-greeter.conf.d
+cat > /etc/lightdm/lightdm-gtk-greeter.conf.d/50-lirioos.conf <<'EOF'
+[greeter]
+background=/usr/share/backgrounds/lirioos.png
+theme-name=Greybird
+icon-theme-name=Papirus
+EOF
