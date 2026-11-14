@@ -35,4 +35,5 @@ Usuario del modo live: `lirio` (contraseña `live`).
 
 - Tema de colores morado propio para ventanas y paneles.
 - Configurar el dock con los iconos de las apps.
-- Kernel propio en C con interfaz gráfica y teclado español: ya hay una versión en `kernel/` (ver `kernel/README.md`).
+- Kernel propio en C con interfaz gráfica, teclado español y ratón: ya hay una versión en `kernel/` (ver `kernel/README.md`). Es la parte principal del proyecto.
+- La edición Linux (ISO de la carpeta `config/`) queda como extra y solo se compila a mano desde Actions.

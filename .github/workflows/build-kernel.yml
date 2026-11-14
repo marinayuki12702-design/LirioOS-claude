@@ -50,11 +50,25 @@ jobs:
             sleep 2
             echo "screendump /tmp/ayuda.ppm"
             sleep 1
+            # Teclado español: echo hola ñandú ¿qué?
+            for k in e c h o spc h o l a spc semicolon a n d apostrophe u spc shift-equal q u apostrophe e shift-minus ret; do
+              echo "sendkey $k"; sleep 0.3
+            done
+            sleep 1
+            # Ratón: sube hasta la barra de título, pulsa, arrastra la ventana y suelta
+            for i in 1 2 3 4 5 6; do echo "mouse_move 0 -54"; sleep 0.3; done
+            sleep 1
+            echo "mouse_button 1"; sleep 0.5
+            for i in 1 2 3 4 5 6; do echo "mouse_move 20 17"; sleep 0.4; done
+            echo "mouse_button 0"; sleep 1
+            echo "screendump /tmp/raton.ppm"
+            sleep 1
             echo "quit"
           ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -m 256 -vga std -display none -monitor stdio -no-reboot
           mkdir -p ../capturas
           convert /tmp/arranque.ppm ../capturas/arranque.png
           convert /tmp/ayuda.ppm ../capturas/ayuda.png
+          convert /tmp/raton.ppm ../capturas/raton.png
 
       - name: Guardar las capturas en el repositorio
         if: github.ref == 'refs/heads/main'
@@ -90,7 +104,7 @@ jobs:
           name: "LirioOS kernel ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', inputs.version) }}"
           files: |
             kernel/LirioOS-kernel.iso
-            capturas/ayuda.png
+            capturas/raton.png
           body: |
             ## LirioOS (kernel propio)
 

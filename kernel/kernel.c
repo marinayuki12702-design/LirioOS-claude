@@ -86,7 +86,7 @@ static u8 to_upper(u8 c)
 }
 
 /* Combina una tecla muerta (acento) con la letra siguiente */
-static u8 compose(u8 dead, u8 c)
+static u8 accent(u8 dead, u8 c)
 {
     static const char base[] = "aeiouAEIOU";
     static const u8 acute[] = { 0xE1, 0xE9, 0xED, 0xF3, 0xFA, 0xC1, 0xC9, 0xCD, 0xD3, 0xDA };
@@ -102,43 +102,129 @@ static u8 compose(u8 dead, u8 c)
     return c;
 }
 
-/* Espera una tecla y devuelve su carácter en Latin-1 */
-static u32 key_read(void)
+/* Procesa un byte del teclado y devuelve su carácter en Latin-1 (0 si no produce ninguno) */
+static u32 kbd_byte(u8 sc)
 {
     static u8 shift, altgr, caps, ext, dead;
 
-    for (;;) {
-        if (!(inb(0x64) & 1)) continue;
-        u8 sc = inb(0x60);
+    if (sc == 0xE0) { ext = 1; return 0; }
+    u8 released = sc & 0x80;
+    u8 code = sc & 0x7F;
 
-        if (sc == 0xE0) { ext = 1; continue; }
-        u8 released = sc & 0x80;
-        u8 code = sc & 0x7F;
-
-        if (ext) {                           /* teclas extendidas: solo nos importa AltGr */
-            ext = 0;
-            if (code == 0x38) altgr = !released;
-            continue;
-        }
-        if (code == 0x2A || code == 0x36) { shift = !released; continue; }
-        if (released) continue;
-        if (code == 0x3A) { caps ^= 1; continue; }
-        if (code >= KEYS) continue;
-
-        u8 c;
-        if (altgr) {
-            c = km_altgr[code];
-        } else {
-            u8 base = km_norm[code];
-            if (is_letter(base)) c = (caps ^ shift) ? to_upper(base) : base;
-            else                 c = shift ? km_shift[code] : base;
-        }
-        if (!c) continue;
-
-        if (c >= DEAD_ACUTE && c <= DEAD_CIRC) { dead = c; continue; }
-        if (dead) { c = compose(dead, c); dead = 0; }
-        return c;
+    if (ext) {                           /* teclas extendidas: solo nos importa AltGr */
+        ext = 0;
+        if (code == 0x38) altgr = !released;
+        return 0;
     }
+    if (code == 0x2A || code == 0x36) { shift = !released; return 0; }
+    if (released) return 0;
+    if (code == 0x3A) { caps ^= 1; return 0; }
+    if (code >= KEYS) return 0;
+
+    u8 c;
+    if (altgr) {
+        c = km_altgr[code];
+    } else {
+        u8 base = km_norm[code];
+        if (is_letter(base)) c = (caps ^ shift) ? to_upper(base) : base;
+        else                 c = shift ? km_shift[code] : base;
+    }
+    if (!c) return 0;
+
+    if (c >= DEAD_ACUTE && c <= DEAD_CIRC) { dead = c; return 0; }
+    if (dead) { c = accent(dead, c); dead = 0; }
+    return c;
+}
+
+/* ---------- Ratón PS/2 (consulta directa) ---------- */
+
+static void kbc_wait_write(void)
+{
+    for (u32 i = 0; i < 100000; i++)
+        if (!(inb(0x64) & 2)) return;
+}
+
+static int kbc_wait_read(void)
+{
+    for (u32 i = 0; i < 100000; i++)
+        if (inb(0x64) & 1) return 1;
+    return 0;
+}
+
+static void mouse_cmd(u8 v)
+{
+    kbc_wait_write();
+    outb(0x64, 0xD4);                    /* el siguiente byte va al ratón */
+    kbc_wait_write();
+    outb(0x60, v);
+    if (kbc_wait_read()) inb(0x60);      /* confirmación (0xFA) */
+}
+
+static void mouse_init(void)
+{
+    while (inb(0x64) & 1) inb(0x60);     /* vacía lo que hubiera pendiente */
+    kbc_wait_write();
+    outb(0x64, 0xA8);                    /* activa el puerto del ratón */
+    kbc_wait_write();
+    outb(0x64, 0x20);                    /* lee el byte de configuración */
+    u8 cfg = kbc_wait_read() ? inb(0x60) : 0;
+    cfg = (u8)((cfg | 2) & ~0x20);       /* reloj del ratón activo */
+    kbc_wait_write();
+    outb(0x64, 0x60);
+    kbc_wait_write();
+    outb(0x60, cfg);
+    mouse_cmd(0xF6);                     /* valores por defecto */
+    mouse_cmd(0xF4);                     /* empieza a enviar datos */
+}
+
+static u8 mouse_pkt[3];
+static u8 mouse_idx;
+static u8 mouse_btn;
+
+/* Junta los 3 bytes de un paquete; devuelve 1 cuando hay un movimiento completo */
+static int mouse_feed(u8 d, s32 *dx, s32 *dy, u8 *btn)
+{
+    if (mouse_idx == 0 && !(d & 8)) return 0;      /* byte fuera de sitio: se descarta */
+    mouse_pkt[mouse_idx++] = d;
+    if (mouse_idx < 3) return 0;
+    mouse_idx = 0;
+    if (mouse_pkt[0] & 0xC0) return 0;             /* desbordamiento */
+    *dx = (s32)mouse_pkt[1] - (((s32)mouse_pkt[0] << 4) & 0x100);
+    *dy = (s32)mouse_pkt[2] - (((s32)mouse_pkt[0] << 3) & 0x100);
+    *btn = mouse_pkt[0] & 7;
+    return 1;
+}
+
+/* Atiende al teclado y al ratón; devuelve una tecla (Latin-1) o 0 si no hubo ninguna */
+static u32 input_poll(void)
+{
+    u32 key = 0;
+    s32 adx = 0, ady = 0;
+    int pending = 0;
+    u8 s;
+
+    while (((s = inb(0x64)) & 1) && !key) {
+        u8 d = inb(0x60);
+        if (s & 0x20) {                              /* byte del ratón */
+            s32 dx, dy;
+            u8 btn;
+            if (mouse_feed(d, &dx, &dy, &btn)) {
+                if (btn != mouse_btn && pending) {
+                    gui_mouse(adx, ady, mouse_btn);
+                    adx = ady = 0;
+                    pending = 0;
+                }
+                mouse_btn = btn;
+                adx += dx;
+                ady -= dy;                           /* en el ratón, arriba es positivo */
+                pending = 1;
+            }
+        } else {
+            key = kbd_byte(d);
+        }
+    }
+    if (pending) gui_mouse(adx, ady, mouse_btn);
+    return key;
 }
 
 /* ---------- Sistema de archivos en memoria (ramfs) ---------- */
@@ -176,7 +262,7 @@ static void banner(void)
     con_print(" | |   | | '__| |/ _ \\  | | | \\___ \\ \n", ATTR_PROMPT);
     con_print(" | |___| | |  | | (_) | | |_| |___) |\n", ATTR_PROMPT);
     con_print(" |_____|_|_|  |_|\\___/   \\___/|____/ \n\n", ATTR_PROMPT);
-    con_print("LirioOS kernel 0.2 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
+    con_print("LirioOS kernel 0.3 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
 }
 
 static void run_command(const char *line)
@@ -201,7 +287,7 @@ static void run_command(const char *line)
     } else if (str_eq(line, "clear") || str_eq(line, "limpiar")) {
         con_clear();
     } else if (str_eq(line, "about")) {
-        con_print("LirioOS 0.2 - kernel propio en C, x86 de 32 bits, modo gráfico y sistema de archivos en memoria.\n", ATTR_NORMAL);
+        con_print("LirioOS 0.3 - kernel propio en C, x86 de 32 bits, modo gráfico, ratón y sistema de archivos en memoria.\n", ATTR_NORMAL);
     } else if (str_eq(line, "reboot") || str_eq(line, "reiniciar")) {
         outb(0x64, 0xFE);
     } else if (str_eq(line, "halt") || str_eq(line, "apagar")) {
@@ -269,13 +355,15 @@ void kmain(u32 magic, u32 info)
     char line[128];
     u32 len;
 
-    if (magic != 0x2BADB002 || !(mb->flags & (1u << 12)) || mb->fb_type != 1 || mb->fb_bpp != 32 || mb->fb_addr_hi != 0)
+    if (magic != 0x2BADB002 || !(mb->flags & (1u << 12)) || mb->fb_type != 1 || mb->fb_bpp != 32 || mb->fb_addr_hi != 0 ||
+        mb->fb_width > MAX_W || mb->fb_height > MAX_H)
         text_fatal("LirioOS necesita un modo grafico de 32 bits (arranca con GRUB).");
 
     gui_set_fb((void *)mb->fb_addr_lo, mb->fb_pitch, (s32)mb->fb_width, (s32)mb->fb_height,
                mb->red_pos, mb->green_pos, mb->blue_pos);
 
     draw_desktop();
+    mouse_init();
     banner();
     print_video_info(mb);
 
@@ -283,7 +371,11 @@ void kmain(u32 magic, u32 info)
         con_print("lirio> ", ATTR_PROMPT);
         len = 0;
         for (;;) {
-            u32 c = key_read();
+            u32 c = input_poll();
+            if (!c) {
+                __asm__ volatile ("pause");
+                continue;
+            }
             if (c == '\n') {
                 con_putc('\n', ATTR_NORMAL);
                 break;

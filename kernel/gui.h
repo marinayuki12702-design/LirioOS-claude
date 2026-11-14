@@ -15,20 +15,37 @@ typedef signed int     s32;
 
 /* ---------- Framebuffer ---------- */
 
+#define MAX_W 1024
+#define MAX_H 768
+
+/* fb es el destino de dibujo actual (la memoria intermedia o el fondo guardado);
+ * scr es la pantalla real. Todo se compone fuera de pantalla y después se copia. */
 static volatile u32 *fb;
 static u32 fb_pitch;            /* en píxeles de 32 bits */
+static volatile u32 *scr;
+static u32 scr_pitch;
 static s32 fb_w, fb_h;
 static u8  pos_r = 16, pos_g = 8, pos_b = 0;
 
+static u32 back_buf[MAX_W * MAX_H];
+static u32 wall_buf[MAX_W * MAX_H];
+
+static void target(u32 *buf)
+{
+    fb = buf;
+    fb_pitch = (u32)fb_w;
+}
+
 static void gui_set_fb(void *addr, u32 pitch_bytes, s32 w, s32 h, u8 rpos, u8 gpos, u8 bpos)
 {
-    fb = (volatile u32 *)addr;
-    fb_pitch = pitch_bytes / 4;
+    scr = (volatile u32 *)addr;
+    scr_pitch = pitch_bytes / 4;
     fb_w = w;
     fb_h = h;
     pos_r = rpos;
     pos_g = gpos;
     pos_b = bpos;
+    target(back_buf);
 }
 
 static u32 pack(u32 rgb)
@@ -96,6 +113,78 @@ static void fill_circle(s32 cx, s32 cy, s32 r, u32 rgb, u32 alpha)
 }
 
 static s32 iabs(s32 v) { return v < 0 ? -v : v; }
+
+/* ---------- Copia a pantalla y cursor del ratón ---------- */
+
+static void blit_rect(s32 x, s32 y, s32 w, s32 h)
+{
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > fb_w) w = fb_w - x;
+    if (y + h > fb_h) h = fb_h - y;
+    for (s32 j = 0; j < h; j++)
+        for (s32 i = 0; i < w; i++)
+            scr[(u32)(y + j) * scr_pitch + (u32)(x + i)] = back_buf[(u32)(y + j) * (u32)fb_w + (u32)(x + i)];
+}
+
+#define CUR_W 12
+#define CUR_H 19
+
+static const char *const cursor_sprite[CUR_H] = {
+    "X           ",
+    "XX          ",
+    "X.X         ",
+    "X..X        ",
+    "X...X       ",
+    "X....X      ",
+    "X.....X     ",
+    "X......X    ",
+    "X.......X   ",
+    "X........X  ",
+    "X.....XXXXX ",
+    "X..X..X     ",
+    "X.X X..X    ",
+    "XX  X..X    ",
+    "X    X..X   ",
+    "     X..X   ",
+    "      X..X  ",
+    "      X..X  ",
+    "       XX   ",
+};
+
+static s32 mouse_x, mouse_y;
+
+static void cursor_draw(void)
+{
+    for (s32 j = 0; j < CUR_H; j++)
+        for (s32 i = 0; i < CUR_W; i++) {
+            char c = cursor_sprite[j][i];
+            s32 x = mouse_x + i, y = mouse_y + j;
+            if (c == ' ' || x >= fb_w || y >= fb_h) continue;
+            scr[(u32)y * scr_pitch + (u32)x] = pack(c == 'X' ? 0x2E2150 : 0xFFFFFF);
+        }
+}
+
+/* Copia una zona de la memoria intermedia a la pantalla y vuelve a poner el cursor encima */
+static void present_rect(s32 x, s32 y, s32 w, s32 h)
+{
+    blit_rect(x, y, w, h);
+    cursor_draw();
+}
+
+static void present(void)
+{
+    present_rect(0, 0, fb_w, fb_h);
+}
+
+static void cursor_move_to(s32 nx, s32 ny)
+{
+    s32 ox = mouse_x, oy = mouse_y;
+    mouse_x = nx;
+    mouse_y = ny;
+    blit_rect(ox, oy, CUR_W, CUR_H);
+    cursor_draw();
+}
 
 /* ---------- Texto ---------- */
 
@@ -318,11 +407,23 @@ static const u32 con_palette[3] = { 0xF0E8FF, 0xFF9BD2, 0xB9A2F5 };
 
 static void draw_window(void)
 {
-    win_x = (fb_w - WIN_W) / 2;
-    win_y = 44;
-
-    for (s32 i = 1; i <= 4; i++)
-        fill_rrect(win_x - i, win_y - i + 8, WIN_W + 2 * i, WIN_H + 2 * i, 12 + i, 0x2E2150, 14);
+    /* Sombra: solo el borde, porque el interior queda tapado por la ventana */
+    for (s32 i = 1; i <= 4; i++) {
+        s32 sx = win_x - i, sy = win_y - i + 8, sw = WIN_W + 2 * i, sh = WIN_H + 2 * i;
+        for (s32 j = 0; j < sh; j++) {
+            s32 ay = sy + j;
+            int inner_row = ay >= win_y + 14 && ay < win_y + WIN_H - 14;
+            for (s32 k = 0; k < sw; k++) {
+                s32 ax = sx + k;
+                if (inner_row && ax >= win_x + 14 && ax < win_x + WIN_W - 14) {
+                    k = win_x + WIN_W - 14 - sx - 1;
+                    continue;
+                }
+                if (in_round(k, j, sw, sh, 12 + i))
+                    px_blend(ax, ay, 0x2E2150, 14);
+            }
+        }
+    }
 
     fill_rrect(win_x, win_y, WIN_W, WIN_H, 12, BODY_COLOR, 255);
     fill_rrect(win_x, win_y, WIN_W, 34, 12, 0x7C5CD0, 255);
@@ -348,16 +449,31 @@ static void con_cursor(int on)
 {
     if (on) fill_rect(con_px0 + con_x * 8, con_py0 + con_y * 16 + 14, 8, 2, 0xFF9BD2, 255);
     else    con_draw_cell(con_y, con_x);
+    present_rect(con_px0 + con_x * 8, con_py0 + con_y * 16, 8, 16);
 }
 
-static void con_redraw(void)
+static void con_cell_show(s32 r, s32 c)
+{
+    con_draw_cell(r, c);
+    present_rect(con_px0 + c * 8, con_py0 + r * 16, 8, 16);
+}
+
+/* Dibuja todo el texto en la memoria intermedia (sin copiarlo a la pantalla) */
+static void con_paint(void)
 {
     for (s32 r = 0; r < CON_ROWS; r++)
         for (s32 c = 0; c < CON_COLS; c++)
             con_draw_cell(r, c);
+    fill_rect(con_px0 + con_x * 8, con_py0 + con_y * 16 + 14, 8, 2, 0xFF9BD2, 255);
 }
 
-static void con_clear(void)
+static void con_redraw(void)
+{
+    con_paint();
+    present_rect(con_px0, con_py0, CON_COLS * 8, CON_ROWS * 16);
+}
+
+static void con_reset(void)
 {
     for (s32 r = 0; r < CON_ROWS; r++)
         for (s32 c = 0; c < CON_COLS; c++) {
@@ -366,8 +482,12 @@ static void con_clear(void)
         }
     con_x = 0;
     con_y = 0;
+}
+
+static void con_clear(void)
+{
+    con_reset();
     con_redraw();
-    con_cursor(1);
 }
 
 static void con_scroll(void)
@@ -396,12 +516,12 @@ static void con_putc(u32 ch, u8 attr)
         if (con_x > 0) {
             con_x--;
             con_ch[con_y][con_x] = ' ';
-            con_draw_cell(con_y, con_x);
+            con_cell_show(con_y, con_x);
         }
     } else {
         con_ch[con_y][con_x] = (u8)ch;
         con_at[con_y][con_x] = attr;
-        con_draw_cell(con_y, con_x);
+        con_cell_show(con_y, con_x);
         con_x++;
     }
     if (con_x >= CON_COLS) { con_x = 0; con_y++; }
@@ -415,14 +535,75 @@ static void con_print(const char *s, u8 attr)
     while (*s) con_putc(next_char(&s), attr);
 }
 
-static void draw_desktop(void)
+/* Compone el escritorio entero en la memoria intermedia: fondo guardado + iconos + ventana + dock */
+static void compose(void)
 {
-    draw_wallpaper();
+    target(back_buf);
+    for (u32 i = 0; i < (u32)fb_w * (u32)fb_h; i++)
+        back_buf[i] = wall_buf[i];
     draw_desktop_icons();
     draw_window();
+    con_paint();
     draw_dock();
     draw_topbar();
-    con_clear();
+}
+
+static void draw_desktop(void)
+{
+    win_x = (fb_w - WIN_W) / 2;
+    win_y = 44;
+    mouse_x = fb_w / 2;
+    mouse_y = fb_h / 2;
+
+    target(wall_buf);           /* el fondo se dibuja una sola vez y se guarda */
+    draw_wallpaper();
+    con_reset();
+    compose();
+    present();
+}
+
+#define TITLE_H 34
+
+static int drag_on, left_before;
+static s32 drag_dx, drag_dy;
+
+/* Movimiento del ratón (dx, dy en píxeles; botones: bit 0 = izquierdo) */
+static void gui_mouse(s32 dx, s32 dy, u8 buttons)
+{
+    s32 nx = mouse_x + dx, ny = mouse_y + dy;
+    int left = buttons & 1;
+
+    if (nx < 0) nx = 0;
+    if (ny < 0) ny = 0;
+    if (nx > fb_w - 1) nx = fb_w - 1;
+    if (ny > fb_h - 1) ny = fb_h - 1;
+
+    if (left && !left_before &&
+        nx >= win_x && nx < win_x + WIN_W && ny >= win_y && ny < win_y + TITLE_H) {
+        drag_on = 1;
+        drag_dx = nx - win_x;
+        drag_dy = ny - win_y;
+    }
+    if (!left) drag_on = 0;
+    left_before = left;
+
+    if (drag_on) {
+        s32 wx = nx - drag_dx, wy = ny - drag_dy;
+        if (wx < -(WIN_W - 120)) wx = -(WIN_W - 120);
+        if (wx > fb_w - 120)     wx = fb_w - 120;
+        if (wy < 24)             wy = 24;
+        if (wy > fb_h - 40)      wy = fb_h - 40;
+        if (wx != win_x || wy != win_y) {
+            win_x = wx;
+            win_y = wy;
+            mouse_x = nx;
+            mouse_y = ny;
+            compose();
+            present();
+            return;
+        }
+    }
+    cursor_move_to(nx, ny);
 }
 
 #endif

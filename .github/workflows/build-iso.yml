@@ -1,15 +1,7 @@
-name: Compilar ISO de LirioOS
+name: Compilar ISO de LirioOS (edición Linux, solo manual)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "README.md"
-      - "kernel/**"
-      - "capturas/**"
-      - "docs/**"
-      - ".github/workflows/build-kernel.yml"
 
 jobs:
   build:
