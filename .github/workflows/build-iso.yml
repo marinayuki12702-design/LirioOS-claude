@@ -26,6 +26,7 @@ jobs:
 
       - name: Generar imágenes de marca
         run: |
+          mkdir -p config/includes.chroot/usr/share/backgrounds
           rsvg-convert -w 1920 -h 1080 branding/wallpaper.svg \
             -o config/includes.chroot/usr/share/backgrounds/lirioos.png
 
