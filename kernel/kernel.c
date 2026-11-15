@@ -22,14 +22,6 @@ static int str_eq(const char *a, const char *b)
     return *a == *b;
 }
 
-static int str_starts(const char *s, const char *prefix)
-{
-    while (*prefix) {
-        if (*s++ != *prefix++) return 0;
-    }
-    return 1;
-}
-
 /* ---------- Teclado español (consulta directa, juego de códigos 1) ---------- */
 
 #define DEAD_ACUTE  0x81
@@ -38,6 +30,8 @@ static int str_starts(const char *s, const char *prefix)
 #define DEAD_CIRC   0x84
 
 #define KEYS 0x58
+#define KEY_UP   0x100
+#define KEY_DOWN 0x101
 
 /* Sin Shift. Las letras van en minúscula; Shift y Bloq Mayús las convierten. */
 static const u8 km_norm[KEYS] = {
@@ -111,9 +105,11 @@ static u32 kbd_byte(u8 sc)
     u8 released = sc & 0x80;
     u8 code = sc & 0x7F;
 
-    if (ext) {                           /* teclas extendidas: solo nos importa AltGr */
+    if (ext) {                           /* teclas extendidas: AltGr y las flechas arriba/abajo */
         ext = 0;
         if (code == 0x38) altgr = !released;
+        else if (!released && code == 0x48) return KEY_UP;
+        else if (!released && code == 0x50) return KEY_DOWN;
         return 0;
     }
     if (code == 0x2A || code == 0x36) { shift = !released; return 0; }
@@ -227,29 +223,199 @@ static u32 input_poll(void)
     return key;
 }
 
-/* ---------- Sistema de archivos en memoria (ramfs) ---------- */
+/* ---------- Texto en pantalla ---------- */
+
+/* El texto tecleado ya está en Latin-1: se escribe byte a byte */
+static void put_latin1(const char *s, u8 attr)
+{
+    while (*s) con_putc((u8)*s++, attr);
+}
+
+static void put_num(u32 n, u8 attr)
+{
+    char buf[12];
+    int i = 0;
+    if (n == 0) buf[i++] = '0';
+    while (n > 0) { buf[i++] = (char)('0' + n % 10); n /= 10; }
+    while (i > 0) con_putc((u8)buf[--i], attr);
+}
+
+static void put_num2(u32 n, u8 attr)           /* siempre con dos cifras: 05 */
+{
+    con_putc((u8)('0' + (n / 10) % 10), attr);
+    con_putc((u8)('0' + n % 10), attr);
+}
+
+static u32 slen(const char *s)
+{
+    u32 n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+/* ---------- Sistema de archivos en memoria (ramfs) con carpetas ---------- */
 
 struct ramfs_file {
-    const char *name;
+    const char *path;      /* sin barra inicial: "docs/lirio.txt" */
     const char *data;      /* texto UTF-8 */
 };
 
 static const struct ramfs_file ramfs[] = {
     { "bienvenida.txt",
-      "Bienvenida a LirioOS.\nEste es un kernel nuevo, escrito desde cero.\n" },
-    { "lirio.txt",
+      "Bienvenida a LirioOS.\nEste es un kernel nuevo, escrito desde cero.\nEscribe 'ayuda' para ver los comandos.\n" },
+    { "docs/lirio.txt",
       "El lirio es una flor elegante. Este sistema quiere serlo también.\n" },
-    { "pendiente.txt",
-      "Siguientes pasos: ratón, FAT32 de solo lectura, disco y procesos.\n" },
+    { "docs/pendiente.txt",
+      "Siguientes pasos: aplicaciones, FAT32 de solo lectura, disco y procesos.\n" },
+    { "docs/kernel.txt",
+      "Kernel propio de LirioOS: C y ensamblador, x86 de 32 bits.\nModo gráfico, teclado español, ratón PS/2 y ventanas.\n" },
 };
 
 #define RAMFS_COUNT (sizeof(ramfs) / sizeof(ramfs[0]))
+#define PATH_MAX 96
 
-static const struct ramfs_file *ramfs_find(const char *name)
+static char cwd[PATH_MAX];                     /* carpeta actual; vacío = raíz */
+
+/* ¿Está 'file' dentro de la carpeta 'dir'? (la raíz es "") */
+static int in_dir(const char *file, const char *dir)
+{
+    u32 n = slen(dir);
+    if (n == 0) return 1;
+    for (u32 i = 0; i < n; i++)
+        if (file[i] != dir[i]) return 0;
+    return file[n] == '/';
+}
+
+static int fs_is_dir(const char *path)
+{
+    if (path[0] == 0) return 1;
+    for (u32 i = 0; i < RAMFS_COUNT; i++)
+        if (in_dir(ramfs[i].path, path)) return 1;
+    return 0;
+}
+
+static const struct ramfs_file *fs_file(const char *path)
 {
     for (u32 i = 0; i < RAMFS_COUNT; i++)
-        if (str_eq(ramfs[i].name, name)) return &ramfs[i];
+        if (str_eq(ramfs[i].path, path)) return &ramfs[i];
     return 0;
+}
+
+/* Convierte 'arg' (relativo a la carpeta actual o absoluto) en un camino limpio, sin barras
+ * sobrantes y con los "." y ".." resueltos. Devuelve 0 si es demasiado largo. */
+static int path_resolve(const char *arg, char *out)
+{
+    char full[2 * PATH_MAX];
+    u32 n = 0;
+
+    if (arg[0] != '/') {
+        for (u32 i = 0; cwd[i]; i++) full[n++] = cwd[i];
+        full[n++] = '/';
+    }
+    for (u32 i = 0; arg[i]; i++) {
+        if (n >= 2 * PATH_MAX - 2) return 0;
+        full[n++] = arg[i];
+    }
+    full[n] = 0;
+
+    u32 o = 0, i = 0;
+    out[0] = 0;
+    while (full[i]) {
+        char comp[PATH_MAX];
+        u32 cl = 0;
+        while (full[i] == '/') i++;
+        if (!full[i]) break;
+        while (full[i] && full[i] != '/') {
+            if (cl >= PATH_MAX - 1) return 0;
+            comp[cl++] = full[i++];
+        }
+        comp[cl] = 0;
+        if (str_eq(comp, ".")) continue;
+        if (str_eq(comp, "..")) {
+            while (o > 0 && out[o - 1] != '/') o--;
+            if (o > 0) o--;
+            out[o] = 0;
+            continue;
+        }
+        if (o + cl + 2 >= PATH_MAX) return 0;
+        if (o > 0) out[o++] = '/';
+        for (u32 k = 0; k < cl; k++) out[o++] = comp[k];
+        out[o] = 0;
+    }
+    return 1;
+}
+
+static void cmd_ls(const char *dir)
+{
+    u32 base = dir[0] ? slen(dir) + 1 : 0;
+    int shown = 0;
+
+    for (u32 i = 0; i < RAMFS_COUNT; i++) {
+        if (!in_dir(ramfs[i].path, dir)) continue;
+        const char *rest = ramfs[i].path + base;
+        u32 n = 0;
+        while (rest[n] && rest[n] != '/') n++;
+        int is_sub = rest[n] == '/';
+        int dup = 0;
+        if (is_sub) {                              /* una carpeta se muestra una sola vez */
+            for (u32 j = 0; j < i && !dup; j++) {
+                if (!in_dir(ramfs[j].path, dir)) continue;
+                const char *r2 = ramfs[j].path + base;
+                u32 k = 0;
+                while (k < n && r2[k] == rest[k]) k++;
+                if (k == n && r2[n] == '/') dup = 1;
+            }
+        }
+        if (dup) continue;
+        for (u32 k = 0; k < n; k++) con_putc((u8)rest[k], is_sub ? ATTR_SOFT : ATTR_NORMAL);
+        if (is_sub) con_putc('/', ATTR_SOFT);
+        con_putc('\n', ATTR_NORMAL);
+        shown = 1;
+    }
+    if (!shown) con_print("(vacía)\n", ATTR_SOFT);
+}
+
+/* ---------- Reloj de la máquina (RTC) ---------- */
+
+static u8 cmos_read(u8 reg)
+{
+    outb(0x70, reg);
+    return inb(0x71);
+}
+
+static u8 bcd(u8 v)
+{
+    return (u8)((v & 0x0F) + (v >> 4) * 10);
+}
+
+static void cmd_date(void)
+{
+    u32 tries = 0;
+    while ((cmos_read(0x0A) & 0x80) && tries++ < 100000) { }     /* espera si se está actualizando */
+
+    u8 sec = cmos_read(0x00), min = cmos_read(0x02), hour = cmos_read(0x04);
+    u8 day = cmos_read(0x07), mon = cmos_read(0x08), year = cmos_read(0x09);
+    u8 rb = cmos_read(0x0B);
+    u8 pm = hour & 0x80;
+
+    if (!(rb & 4)) {                               /* los valores vienen en BCD */
+        sec = bcd(sec); min = bcd(min); day = bcd(day); mon = bcd(mon); year = bcd(year);
+        hour = bcd(hour & 0x7F);
+    } else {
+        hour &= 0x7F;
+    }
+    if (!(rb & 2)) {                               /* formato de 12 horas */
+        if (hour == 12) hour = 0;
+        if (pm) hour = (u8)(hour + 12);
+    }
+
+    put_num(2000u + year, ATTR_NORMAL); con_putc('-', ATTR_NORMAL);
+    put_num2(mon, ATTR_NORMAL);         con_putc('-', ATTR_NORMAL);
+    put_num2(day, ATTR_NORMAL);         con_putc(' ', ATTR_NORMAL);
+    put_num2(hour, ATTR_NORMAL);        con_putc(':', ATTR_NORMAL);
+    put_num2(min, ATTR_NORMAL);         con_putc(':', ATTR_NORMAL);
+    put_num2(sec, ATTR_NORMAL);
+    con_print("  (reloj de la máquina)\n", ATTR_SOFT);
 }
 
 /* ---------- Terminal ---------- */
@@ -262,43 +428,182 @@ static void banner(void)
     con_print(" | |   | | '__| |/ _ \\  | | | \\___ \\ \n", ATTR_PROMPT);
     con_print(" | |___| | |  | | (_) | | |_| |___) |\n", ATTR_PROMPT);
     con_print(" |_____|_|_|  |_|\\___/   \\___/|____/ \n\n", ATTR_PROMPT);
-    con_print("LirioOS kernel 0.3 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
+    con_print("LirioOS kernel 0.4 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
+}
+
+static const char *const known_cmds[] = {
+    "ayuda", "help", "ls", "cd", "pwd", "cat", "echo", "limpiar", "clear", "about", "uname",
+    "whoami", "date", "fecha", "reiniciar", "reboot", "apagar", "halt",
+};
+#define KNOWN_COUNT (sizeof(known_cmds) / sizeof(known_cmds[0]))
+
+/* Comandos de Linux que alguien teclearía por costumbre */
+static const char *const linux_cmds[] = {
+    "sudo", "su", "apt", "apt-get", "dpkg", "pacman", "dnf", "yum", "snap", "pip", "npm",
+};
+static const char *const edit_cmds[] = { "mkdir", "rm", "touch", "cp", "mv", "nano", "vim" };
+
+static u32 edit_distance(const char *a, const char *b)
+{
+    u32 la = slen(a), lb = slen(b);
+    u32 d[17][17];
+    if (la > 16 || lb > 16) return 99;
+    for (u32 i = 0; i <= la; i++) d[i][0] = i;
+    for (u32 j = 0; j <= lb; j++) d[0][j] = j;
+    for (u32 i = 1; i <= la; i++)
+        for (u32 j = 1; j <= lb; j++) {
+            u32 v = d[i - 1][j] + 1;
+            u32 cost = a[i - 1] == b[j - 1] ? 0 : 1;
+            if (d[i][j - 1] + 1 < v) v = d[i][j - 1] + 1;
+            if (d[i - 1][j - 1] + cost < v) v = d[i - 1][j - 1] + cost;
+            d[i][j] = v;
+        }
+    return d[la][lb];
+}
+
+static int in_list(const char *w, const char *const *list, u32 n)
+{
+    for (u32 i = 0; i < n; i++)
+        if (str_eq(w, list[i])) return 1;
+    return 0;
 }
 
 static void run_command(const char *line)
 {
-    if (line[0] == 0) return;
+    char cmd[24];
+    char path[PATH_MAX];
+    u32 n = 0;
 
-    if (str_eq(line, "help") || str_eq(line, "ayuda")) {
-        con_print("Comandos: ayuda, ls, cat <archivo>, echo <texto>, limpiar, about, reiniciar, apagar\n", ATTR_NORMAL);
-    } else if (str_eq(line, "ls")) {
-        for (u32 i = 0; i < RAMFS_COUNT; i++) {
-            con_print(ramfs[i].name, ATTR_NORMAL);
+    while (*line == ' ') line++;
+    if (!*line) return;
+    while (*line && *line != ' ' && n < sizeof(cmd) - 1) cmd[n++] = *line++;
+    cmd[n] = 0;
+    while (*line && *line != ' ') line++;
+    while (*line == ' ') line++;
+    const char *arg = line;                        /* lo que sigue al nombre del comando */
+
+    if (str_eq(cmd, "help") || str_eq(cmd, "ayuda")) {
+        con_print("Comandos de LirioOS:\n", ATTR_SOFT);
+        con_print("  ayuda           muestra esta ayuda\n", ATTR_NORMAL);
+        con_print("  ls [carpeta]    lista los archivos y carpetas\n", ATTR_NORMAL);
+        con_print("  cd <carpeta>    entra en una carpeta (cd .. sube, cd / va a la raíz)\n", ATTR_NORMAL);
+        con_print("  pwd             muestra la carpeta actual\n", ATTR_NORMAL);
+        con_print("  cat <archivo>   muestra el contenido de un archivo\n", ATTR_NORMAL);
+        con_print("  echo [texto]    escribe un texto\n", ATTR_NORMAL);
+        con_print("  date            fecha y hora del reloj de la máquina\n", ATTR_NORMAL);
+        con_print("  whoami, uname   quién eres y qué sistema es este\n", ATTR_NORMAL);
+        con_print("  limpiar         borra la pantalla\n", ATTR_NORMAL);
+        con_print("  reiniciar, apagar\n", ATTR_NORMAL);
+        con_print("Flecha arriba/abajo: comandos anteriores.\n", ATTR_SOFT);
+    } else if (str_eq(cmd, "ls")) {
+        if (arg[0] == 0) {
+            cmd_ls(cwd);
+        } else if (!path_resolve(arg, path)) {
+            con_print("ls: ruta demasiado larga\n", ATTR_NORMAL);
+        } else if (fs_is_dir(path)) {
+            cmd_ls(path);
+        } else if (fs_file(path)) {
+            put_latin1(arg, ATTR_NORMAL);
+            con_putc('\n', ATTR_NORMAL);
+        } else {
+            con_print("ls: no existe: ", ATTR_NORMAL);
+            put_latin1(arg, ATTR_NORMAL);
             con_putc('\n', ATTR_NORMAL);
         }
-    } else if (str_starts(line, "cat ")) {
-        const struct ramfs_file *f = ramfs_find(line + 4);
-        if (f) con_print(f->data, ATTR_NORMAL);
-        else   con_print("cat: archivo no encontrado\n", ATTR_NORMAL);
-    } else if (str_starts(line, "echo ")) {
-        for (const char *p = line + 5; *p; p++)
-            con_putc((u8)*p, ATTR_NORMAL);       /* el texto tecleado ya está en Latin-1 */
+    } else if (str_eq(cmd, "cd")) {
+        if (arg[0] == 0) arg = "/";
+        if (!path_resolve(arg, path)) {
+            con_print("cd: ruta demasiado larga\n", ATTR_NORMAL);
+        } else if (fs_is_dir(path)) {
+            for (u32 i = 0; i < PATH_MAX; i++) cwd[i] = path[i];
+        } else if (fs_file(path)) {
+            con_print("cd: no es una carpeta: ", ATTR_NORMAL);
+            put_latin1(arg, ATTR_NORMAL);
+            con_print("   (para ver un archivo usa 'cat')\n", ATTR_SOFT);
+        } else {
+            con_print("cd: no existe: ", ATTR_NORMAL);
+            put_latin1(arg, ATTR_NORMAL);
+            con_putc('\n', ATTR_NORMAL);
+        }
+    } else if (str_eq(cmd, "pwd")) {
+        con_putc('/', ATTR_NORMAL);
+        put_latin1(cwd, ATTR_NORMAL);
         con_putc('\n', ATTR_NORMAL);
-    } else if (str_eq(line, "clear") || str_eq(line, "limpiar")) {
+    } else if (str_eq(cmd, "cat")) {
+        if (arg[0] == 0) {
+            con_print("uso: cat <archivo>\n", ATTR_NORMAL);
+        } else if (!path_resolve(arg, path)) {
+            con_print("cat: ruta demasiado larga\n", ATTR_NORMAL);
+        } else if (fs_file(path)) {
+            con_print(fs_file(path)->data, ATTR_NORMAL);
+        } else if (fs_is_dir(path)) {
+            con_print("cat: es una carpeta (usa 'ls')\n", ATTR_NORMAL);
+        } else {
+            con_print("cat: no existe: ", ATTR_NORMAL);
+            put_latin1(arg, ATTR_NORMAL);
+            con_putc('\n', ATTR_NORMAL);
+        }
+    } else if (str_eq(cmd, "echo")) {
+        put_latin1(arg, ATTR_NORMAL);
+        con_putc('\n', ATTR_NORMAL);
+    } else if (str_eq(cmd, "date") || str_eq(cmd, "fecha")) {
+        cmd_date();
+    } else if (str_eq(cmd, "whoami")) {
+        con_print("lirio\n", ATTR_NORMAL);
+    } else if (str_eq(cmd, "uname")) {
+        con_print("LirioOS 0.4 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
+    } else if (str_eq(cmd, "clear") || str_eq(cmd, "limpiar")) {
         con_clear();
-    } else if (str_eq(line, "about")) {
-        con_print("LirioOS 0.3 - kernel propio en C, x86 de 32 bits, modo gráfico, ratón y sistema de archivos en memoria.\n", ATTR_NORMAL);
-    } else if (str_eq(line, "reboot") || str_eq(line, "reiniciar")) {
+    } else if (str_eq(cmd, "about")) {
+        con_print("LirioOS 0.4 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
+    } else if (str_eq(cmd, "reboot") || str_eq(cmd, "reiniciar")) {
         outb(0x64, 0xFE);
-    } else if (str_eq(line, "halt") || str_eq(line, "apagar")) {
+    } else if (str_eq(cmd, "halt") || str_eq(cmd, "apagar")) {
         con_print("Sistema detenido. Ya puedes cerrar la máquina.\n", ATTR_NORMAL);
         for (;;) __asm__ volatile ("cli; hlt");
+    } else if (in_list(cmd, linux_cmds, sizeof(linux_cmds) / sizeof(linux_cmds[0]))) {
+        put_latin1(cmd, ATTR_NORMAL);
+        con_print(" es un comando de Linux. LirioOS no es Linux: aquí no hay usuarios ni paquetes (todavía).\n", ATTR_NORMAL);
+    } else if (in_list(cmd, edit_cmds, sizeof(edit_cmds) / sizeof(edit_cmds[0]))) {
+        put_latin1(cmd, ATTR_NORMAL);
+        con_print(": todavía no se pueden crear ni cambiar archivos (el sistema de archivos es de solo lectura).\n", ATTR_NORMAL);
     } else {
         con_print("comando desconocido: ", ATTR_NORMAL);
-        for (const char *p = line; *p; p++)
-            con_putc((u8)*p, ATTR_NORMAL);
+        put_latin1(cmd, ATTR_NORMAL);
         con_putc('\n', ATTR_NORMAL);
+        u32 best = 99, bi = 0;
+        for (u32 i = 0; i < KNOWN_COUNT; i++) {
+            u32 d = edit_distance(cmd, known_cmds[i]);
+            if (d < best) { best = d; bi = i; }
+        }
+        if (best <= 1 || (best == 2 && slen(cmd) >= 5)) {
+            con_print("¿Quisiste decir '", ATTR_SOFT);
+            put_latin1(known_cmds[bi], ATTR_SOFT);
+            con_print("'?\n", ATTR_SOFT);
+        } else {
+            con_print("Escribe 'ayuda' para ver los comandos.\n", ATTR_SOFT);
+        }
     }
+}
+
+/* Historial de comandos (flechas arriba y abajo) */
+#define HIST 8
+static char hist[HIST][128];
+static u32 hist_n;
+
+static void hist_add(const char *line)
+{
+    if (!line[0]) return;
+    if (hist_n > 0 && str_eq(hist[hist_n - 1], line)) return;
+    if (hist_n == HIST) {
+        for (u32 i = 1; i < HIST; i++)
+            for (u32 k = 0; k < 128; k++) hist[i - 1][k] = hist[i][k];
+        hist_n--;
+    }
+    u32 k = 0;
+    while (line[k] && k < 127) { hist[hist_n][k] = line[k]; k++; }
+    hist[hist_n][k] = 0;
+    hist_n++;
 }
 
 /* ---------- Arranque ---------- */
@@ -368,7 +673,11 @@ void kmain(u32 magic, u32 info)
     print_video_info(mb);
 
     for (;;) {
-        con_print("lirio> ", ATTR_PROMPT);
+        u32 hpos = hist_n;
+
+        con_print("lirio:/", ATTR_PROMPT);
+        con_print(cwd, ATTR_PROMPT);
+        con_print("> ", ATTR_PROMPT);
         len = 0;
         for (;;) {
             u32 c = input_poll();
@@ -376,17 +685,27 @@ void kmain(u32 magic, u32 info)
                 __asm__ volatile ("pause");
                 continue;
             }
+            if (c == KEY_UP || c == KEY_DOWN) {
+                if (c == KEY_UP && hpos > 0) hpos--;
+                else if (c == KEY_DOWN && hpos < hist_n) hpos++;
+                else continue;
+                while (len > 0) { len--; con_putc('\b', ATTR_NORMAL); }
+                if (hpos < hist_n)
+                    for (const char *p = hist[hpos]; *p; p++) { line[len++] = *p; con_putc((u8)*p, ATTR_NORMAL); }
+                continue;
+            }
             if (c == '\n') {
                 con_putc('\n', ATTR_NORMAL);
                 break;
             } else if (c == '\b') {
                 if (len > 0) { len--; con_putc('\b', ATTR_NORMAL); }
-            } else if (c >= 32 && len < sizeof(line) - 1) {
+            } else if (c >= 32 && c < 256 && len < sizeof(line) - 1) {
                 line[len++] = (char)c;
                 con_putc(c, ATTR_NORMAL);
             }
         }
         line[len] = 0;
+        hist_add(line);
         run_command(line);
     }
 }

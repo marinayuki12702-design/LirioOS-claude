@@ -334,21 +334,82 @@ static void draw_desktop_icons(void)
     draw_text_shadow(48 - text_width("Papelera", 1) / 2, 200, "Papelera", 0xFFFFFF, 0x4B2F93);
 }
 
+/* ---------- Estado de las ventanas ---------- */
+
+#define CON_COLS 96
+#define CON_ROWS 26
+
+#define WIN_W 800
+#define WIN_H 480
+#define APP_W 460
+#define APP_H 250
+#define TITLE_H 34
+#define BODY_COLOR 0x241A3F
+#define APP_COLOR  0x2B2147
+
+static s32 win_x, win_y;            /* ventana del terminal */
+static s32 app_x, app_y;            /* ventana de aplicación (una a la vez) */
+static int term_vis = 1;            /* el terminal está a la vista */
+static int app_vis;                 /* hay una aplicación abierta */
+static int app_kind;                /* icono del dock que la abrió (1..4) */
+static int app_top;                 /* 1 = la aplicación está por encima del terminal */
+static s32 con_px0, con_py0;
+
+/* ---------- Dock ---------- */
+
+#define DOCK_N    5
+#define DOCK_SIZE 52
+#define DOCK_GAP  14
+#define DOCK_PAD  16
+
+static const char *const dock_names[DOCK_N] = { "Terminal", "Archivos", "Navegador", "Ajustes", "Más" };
+static int dock_hover = -1;
+
+static void dock_geom(s32 *x0, s32 *y0, s32 *w, s32 *h)
+{
+    *w = DOCK_N * DOCK_SIZE + (DOCK_N - 1) * DOCK_GAP + 2 * DOCK_PAD;
+    *h = DOCK_SIZE + 24;
+    *x0 = (fb_w - *w) / 2;
+    *y0 = fb_h - *h - 14;
+}
+
+static void dock_icon_pos(int i, s32 *x, s32 *y)
+{
+    s32 x0, y0, w, h;
+    dock_geom(&x0, &y0, &w, &h);
+    *x = x0 + DOCK_PAD + i * (DOCK_SIZE + DOCK_GAP);
+    *y = y0 + 12;
+}
+
+/* Icono del dock bajo el punto (px, py), o -1 */
+static int dock_hit(s32 px, s32 py)
+{
+    for (int i = 0; i < DOCK_N; i++) {
+        s32 x, y;
+        dock_icon_pos(i, &x, &y);
+        if (px >= x - DOCK_GAP / 2 && px < x + DOCK_SIZE + DOCK_GAP / 2 && py >= y - 8 && py < y + DOCK_SIZE + 8)
+            return i;
+    }
+    return -1;
+}
+
 static void draw_dock(void)
 {
-    const s32 n = 5, size = 52, gap = 14, pad = 16;
-    s32 w = n * size + (n - 1) * gap + 2 * pad;
-    s32 h = size + 24;
-    s32 x0 = (fb_w - w) / 2;
-    s32 y0 = fb_h - h - 14;
+    const s32 size = DOCK_SIZE;
+    s32 x0, y0, w, h;
+    dock_geom(&x0, &y0, &w, &h);
 
     fill_rrect(x0, y0 + 4, w, h, 20, 0x2E2150, 40);   /* sombra suave */
     fill_rrect(x0, y0, w, h, 20, 0xFFFFFF, 120);
 
-    for (s32 i = 0; i < n; i++) {
-        s32 ix = x0 + pad + i * (size + gap);
-        s32 iy = y0 + 12;
+    for (int i = 0; i < DOCK_N; i++) {
+        s32 ix, iy;
+        dock_icon_pos(i, &ix, &iy);
         s32 cx = ix + size / 2, cy = iy + size / 2;
+
+        if (i == dock_hover)
+            fill_rrect(ix - 6, iy - 6, size + 12, size + 12, 17, 0xFFFFFF, 110);
+
         switch (i) {
         case 0:  /* Terminal */
             fill_rrect(ix, iy, size, size, 13, 0x2B2147, 255);
@@ -380,21 +441,58 @@ static void draw_dock(void)
                 fill_circle(cx + k * 13, cy, 4, 0xFFFFFF, 255);
             break;
         }
+
+        int open = (i == 0) ? term_vis : (app_vis && app_kind == i);
+        if (open) fill_circle(cx, y0 + h - 7, 2, 0x5F3DBA, 255);      /* aplicación abierta */
     }
-    fill_circle(x0 + pad + size / 2, y0 + h - 7, 2, 0x5F3DBA, 255);   /* aplicación abierta */
+
+    if (dock_hover >= 0) {                                             /* nombre sobre el icono */
+        s32 ix, iy;
+        dock_icon_pos(dock_hover, &ix, &iy);
+        const char *name = dock_names[dock_hover];
+        s32 bw = text_width(name, 1) + 20;
+        s32 bx = ix + size / 2 - bw / 2, by = y0 - 34;
+        fill_rrect(bx, by, bw, 24, 8, 0x2E2150, 235);
+        draw_text(bx + 10, by + 4, name, 0xFFFFFF, 1);
+    }
 }
 
-/* ---------- Ventana de terminal ---------- */
+/* ---------- Marco de ventana ---------- */
 
-#define CON_COLS 96
-#define CON_ROWS 26
+static void draw_frame(s32 x, s32 y, s32 w, s32 h, const char *title, u32 body, int active)
+{
+    /* Sombra: solo el borde, porque el interior queda tapado por la ventana */
+    for (s32 i = 1; i <= 4; i++) {
+        s32 sx = x - i, sy = y - i + 8, sw = w + 2 * i, sh = h + 2 * i;
+        for (s32 j = 0; j < sh; j++) {
+            s32 ay = sy + j;
+            int inner_row = ay >= y + 14 && ay < y + h - 14;
+            for (s32 k = 0; k < sw; k++) {
+                s32 ax = sx + k;
+                if (inner_row && ax >= x + 14 && ax < x + w - 14) {
+                    k = x + w - 14 - sx - 1;
+                    continue;
+                }
+                if (in_round(k, j, sw, sh, 12 + i))
+                    px_blend(ax, ay, 0x2E2150, 14);
+            }
+        }
+    }
 
-#define WIN_W 800
-#define WIN_H 480
-#define BODY_COLOR 0x241A3F
+    u32 bar = active ? 0x7C5CD0 : 0xA593DD;
+    fill_rrect(x, y, w, h, 12, body, 255);
+    fill_rrect(x, y, w, TITLE_H, 12, bar, 255);
+    fill_rect(x, y + 20, w, 14, bar, 255);
 
-static s32 win_x, win_y;
-static s32 con_px0, con_py0;
+    fill_circle(x + 20, y + 17, 6, 0xFF8FB1, 255);     /* cerrar */
+    fill_circle(x + 40, y + 17, 6, 0xFFD479, 255);     /* minimizar */
+    fill_circle(x + 60, y + 17, 6, 0x9BE7A8, 255);     /* centrar */
+
+    draw_text(x + (w - text_width(title, 1)) / 2, y + 9, title, 0xFFFFFF, 1);
+}
+
+/* ---------- Consola (el texto del terminal) ---------- */
+
 static u8  con_ch[CON_ROWS][CON_COLS];
 static u8  con_at[CON_ROWS][CON_COLS];
 static s32 con_x, con_y;
@@ -405,48 +503,40 @@ static const u32 con_palette[3] = { 0xF0E8FF, 0xFF9BD2, 0xB9A2F5 };
 #define ATTR_PROMPT 1
 #define ATTR_SOFT   2
 
-static void draw_window(void)
-{
-    /* Sombra: solo el borde, porque el interior queda tapado por la ventana */
-    for (s32 i = 1; i <= 4; i++) {
-        s32 sx = win_x - i, sy = win_y - i + 8, sw = WIN_W + 2 * i, sh = WIN_H + 2 * i;
-        for (s32 j = 0; j < sh; j++) {
-            s32 ay = sy + j;
-            int inner_row = ay >= win_y + 14 && ay < win_y + WIN_H - 14;
-            for (s32 k = 0; k < sw; k++) {
-                s32 ax = sx + k;
-                if (inner_row && ax >= win_x + 14 && ax < win_x + WIN_W - 14) {
-                    k = win_x + WIN_W - 14 - sx - 1;
-                    continue;
-                }
-                if (in_round(k, j, sw, sh, 12 + i))
-                    px_blend(ax, ay, 0x2E2150, 14);
-            }
-        }
-    }
-
-    fill_rrect(win_x, win_y, WIN_W, WIN_H, 12, BODY_COLOR, 255);
-    fill_rrect(win_x, win_y, WIN_W, 34, 12, 0x7C5CD0, 255);
-    fill_rect(win_x, win_y + 20, WIN_W, 14, 0x7C5CD0, 255);
-
-    fill_circle(win_x + 20, win_y + 17, 6, 0xFF8FB1, 255);
-    fill_circle(win_x + 40, win_y + 17, 6, 0xFFD479, 255);
-    fill_circle(win_x + 60, win_y + 17, 6, 0x9BE7A8, 255);
-
-    const char *title = "lirio@lirioos: terminal";
-    draw_text(win_x + (WIN_W - text_width(title, 1)) / 2, win_y + 9, title, 0xFFFFFF, 1);
-
-    con_px0 = win_x + 14;
-    con_py0 = win_y + 34 + 10;
-}
+static void compose(void);
 
 static void con_draw_cell(s32 r, s32 c)
 {
     draw_glyph(con_px0 + c * 8, con_py0 + r * 16, con_ch[r][c], con_palette[con_at[r][c]], BODY_COLOR, 1);
 }
 
+static int rects_overlap(s32 ax, s32 ay, s32 aw, s32 ah, s32 bx, s32 by, s32 bw, s32 bh)
+{
+    return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
+}
+
+/* 0 = el terminal no se ve; 1 = se puede dibujar directamente; 2 = algo lo tapa y hay que recomponer todo */
+static int con_mode(void)
+{
+    s32 dx, dy, dw, dh;
+    if (!term_vis) return 0;
+    if (con_py0 < 24) return 2;
+    dock_geom(&dx, &dy, &dw, &dh);
+    if (rects_overlap(con_px0, con_py0, CON_COLS * 8, CON_ROWS * 16, dx, dy - 36, dw, dh + 36)) return 2;
+    if (app_vis && app_top &&
+        rects_overlap(con_px0, con_py0, CON_COLS * 8, CON_ROWS * 16, app_x - 8, app_y - 8, APP_W + 16, APP_H + 16))
+        return 2;
+    return 1;
+}
+
 static void con_cursor(int on)
 {
+    int m = con_mode();
+    if (m == 0) return;
+    if (m == 2) {
+        if (on) { compose(); present(); }
+        return;
+    }
     if (on) fill_rect(con_px0 + con_x * 8, con_py0 + con_y * 16 + 14, 8, 2, 0xFF9BD2, 255);
     else    con_draw_cell(con_y, con_x);
     present_rect(con_px0 + con_x * 8, con_py0 + con_y * 16, 8, 16);
@@ -454,6 +544,7 @@ static void con_cursor(int on)
 
 static void con_cell_show(s32 r, s32 c)
 {
+    if (con_mode() != 1) return;
     con_draw_cell(r, c);
     present_rect(con_px0 + c * 8, con_py0 + r * 16, 8, 16);
 }
@@ -469,6 +560,9 @@ static void con_paint(void)
 
 static void con_redraw(void)
 {
+    int m = con_mode();
+    if (m == 0) return;
+    if (m == 2) { compose(); present(); return; }
     con_paint();
     present_rect(con_px0, con_py0, CON_COLS * 8, CON_ROWS * 16);
 }
@@ -535,23 +629,93 @@ static void con_print(const char *s, u8 attr)
     while (*s) con_putc(next_char(&s), attr);
 }
 
-/* Compone el escritorio entero en la memoria intermedia: fondo guardado + iconos + ventana + dock */
+/* ---------- Ventanas ---------- */
+
+static void draw_term(void)
+{
+    draw_frame(win_x, win_y, WIN_W, WIN_H, "lirio@lirioos: terminal", BODY_COLOR, !(app_vis && app_top));
+    con_px0 = win_x + 14;
+    con_py0 = win_y + TITLE_H + 10;
+    con_paint();
+}
+
+static const char *const app_lines[DOCK_N][3] = {
+    { 0, 0, 0 },
+    { "Aquí irá el explorador de archivos.", "Necesita leer discos (FAT32).", "Mientras tanto, usa 'ls' y 'cat' en el terminal." },
+    { "Aquí irá el navegador web.", "Necesita red (TCP/IP y TLS), que aún no existe.", 0 },
+    { "Aquí irán los ajustes del sistema.", "Idioma del teclado, fondo y pantalla.", 0 },
+    { "Aquí irán más aplicaciones:", "galería de imágenes, vídeo y cámara.", 0 },
+};
+
+static void draw_app(void)
+{
+    const char *name = dock_names[app_kind];
+    draw_frame(app_x, app_y, APP_W, APP_H, name, APP_COLOR, app_top);
+    draw_text(app_x + (APP_W - text_width(name, 2)) / 2, app_y + 56, name, 0xFF9BD2, 2);
+    for (int i = 0; i < 3; i++) {
+        const char *l = app_lines[app_kind][i];
+        if (l) draw_text(app_x + (APP_W - text_width(l, 1)) / 2, app_y + 108 + i * 22, l, 0xF0E8FF, 1);
+    }
+    fill_rrect(app_x + APP_W / 2 - 62, app_y + APP_H - 50, 124, 26, 13, 0x7C5CD0, 255);
+    draw_text(app_x + (APP_W - text_width("Próximamente", 1)) / 2, app_y + APP_H - 45, "Próximamente", 0xFFFFFF, 1);
+}
+
+/* Compone el escritorio entero en la memoria intermedia: fondo guardado + iconos + ventanas + dock */
 static void compose(void)
 {
     target(back_buf);
     for (u32 i = 0; i < (u32)fb_w * (u32)fb_h; i++)
         back_buf[i] = wall_buf[i];
     draw_desktop_icons();
-    draw_window();
-    con_paint();
+    if (app_vis && !app_top) draw_app();
+    if (term_vis) draw_term();
+    if (app_vis && app_top) draw_app();
     draw_dock();
     draw_topbar();
 }
 
+/* Ventana 0 = terminal, 1 = aplicación */
+static int win_visible(int w) { return w == 0 ? term_vis : app_vis; }
+
+static void win_geom(int w, s32 *x, s32 *y, s32 *ww, s32 *hh)
+{
+    if (w == 0) { *x = win_x; *y = win_y; *ww = WIN_W; *hh = WIN_H; }
+    else        { *x = app_x; *y = app_y; *ww = APP_W; *hh = APP_H; }
+}
+
+static void win_set_pos(int w, s32 x, s32 y)
+{
+    if (w == 0) { win_x = x; win_y = y; }
+    else        { app_x = x; app_y = y; }
+}
+
+static void win_default(int w)
+{
+    if (w == 0) win_set_pos(0, (fb_w - WIN_W) / 2, 44);
+    else        win_set_pos(1, (fb_w - APP_W) / 2 + 80, 150);
+}
+
+static void win_hide(int w)
+{
+    if (w == 0) term_vis = 0;
+    else        app_vis = 0;
+}
+
+static void win_raise(int w) { app_top = (w == 1); }
+
+static int in_circle(s32 px, s32 py, s32 cx, s32 cy, s32 r)
+{
+    return (px - cx) * (px - cx) + (py - cy) * (py - cy) <= r * r;
+}
+
 static void draw_desktop(void)
 {
-    win_x = (fb_w - WIN_W) / 2;
-    win_y = 44;
+    win_default(0);
+    win_default(1);
+    term_vis = 1;
+    app_vis = 0;
+    app_top = 0;
+    dock_hover = -1;
     mouse_x = fb_w / 2;
     mouse_y = fb_h / 2;
 
@@ -562,9 +726,25 @@ static void draw_desktop(void)
     present();
 }
 
-#define TITLE_H 34
+/* Clic en un icono del dock */
+static void dock_click(int i)
+{
+    if (i == 0) {
+        if (!term_vis)                       { term_vis = 1; win_raise(0); }
+        else if (!(app_vis && app_top))      { term_vis = 0; }     /* ya estaba delante: se esconde */
+        else                                 { win_raise(0); }
+    } else if (app_vis && app_kind == i) {
+        if (app_top) app_vis = 0;
+        else         win_raise(1);
+    } else {
+        app_kind = i;
+        app_vis = 1;
+        win_default(1);
+        win_raise(1);
+    }
+}
 
-static int drag_on, left_before;
+static int drag_on, left_before, drag_win;
 static s32 drag_dx, drag_dy;
 
 /* Movimiento del ratón (dx, dy en píxeles; botones: bit 0 = izquierdo) */
@@ -572,38 +752,76 @@ static void gui_mouse(s32 dx, s32 dy, u8 buttons)
 {
     s32 nx = mouse_x + dx, ny = mouse_y + dy;
     int left = buttons & 1;
+    int redraw = 0;
 
     if (nx < 0) nx = 0;
     if (ny < 0) ny = 0;
     if (nx > fb_w - 1) nx = fb_w - 1;
     if (ny > fb_h - 1) ny = fb_h - 1;
 
-    if (left && !left_before &&
-        nx >= win_x && nx < win_x + WIN_W && ny >= win_y && ny < win_y + TITLE_H) {
-        drag_on = 1;
-        drag_dx = nx - win_x;
-        drag_dy = ny - win_y;
+    int hv = dock_hit(nx, ny);
+    if (hv != dock_hover) {
+        dock_hover = hv;
+        redraw = 1;
+    }
+
+    if (left && !left_before) {
+        if (hv >= 0) {
+            dock_click(hv);
+            redraw = 1;
+        } else {
+            for (int k = 0; k < 2; k++) {                  /* de la ventana de arriba a la de abajo */
+                int w = (k == 0) ? (app_top ? 1 : 0) : (app_top ? 0 : 1);
+                s32 x, y, ww, hh;
+                if (!win_visible(w)) continue;
+                win_geom(w, &x, &y, &ww, &hh);
+                if (nx < x || nx >= x + ww || ny < y || ny >= y + hh) continue;
+                if (ny < y + TITLE_H) {
+                    if (in_circle(nx, ny, x + 20, y + 17, 9) || in_circle(nx, ny, x + 40, y + 17, 9)) {
+                        win_hide(w);
+                    } else if (in_circle(nx, ny, x + 60, y + 17, 9)) {
+                        win_default(w);
+                        win_raise(w);
+                    } else {
+                        drag_on = 1;
+                        drag_win = w;
+                        drag_dx = nx - x;
+                        drag_dy = ny - y;
+                        win_raise(w);
+                    }
+                } else {
+                    win_raise(w);
+                }
+                redraw = 1;
+                break;
+            }
+        }
     }
     if (!left) drag_on = 0;
     left_before = left;
 
     if (drag_on) {
+        s32 x, y, ww, hh;
+        win_geom(drag_win, &x, &y, &ww, &hh);
         s32 wx = nx - drag_dx, wy = ny - drag_dy;
-        if (wx < -(WIN_W - 120)) wx = -(WIN_W - 120);
-        if (wx > fb_w - 120)     wx = fb_w - 120;
-        if (wy < 24)             wy = 24;
-        if (wy > fb_h - 40)      wy = fb_h - 40;
-        if (wx != win_x || wy != win_y) {
-            win_x = wx;
-            win_y = wy;
-            mouse_x = nx;
-            mouse_y = ny;
-            compose();
-            present();
-            return;
+        if (wx < -(ww - 120)) wx = -(ww - 120);
+        if (wx > fb_w - 120)  wx = fb_w - 120;
+        if (wy < 24)          wy = 24;
+        if (wy > fb_h - 40)   wy = fb_h - 40;
+        if (wx != x || wy != y) {
+            win_set_pos(drag_win, wx, wy);
+            redraw = 1;
         }
     }
-    cursor_move_to(nx, ny);
+
+    if (redraw) {
+        mouse_x = nx;
+        mouse_y = ny;
+        compose();
+        present();
+    } else {
+        cursor_move_to(nx, ny);
+    }
 }
 
 #endif

@@ -50,6 +50,13 @@ jobs:
             sleep 2
             echo "screendump /tmp/ayuda.ppm"
             sleep 1
+            # Comandos con carpetas: cd docs, ls, cat lirio.txt, date
+            for k in c d spc d o c s ret  l s ret  c a t spc l i r i o dot t x t ret  d a t e ret; do
+              echo "sendkey $k"; sleep 0.3
+            done
+            sleep 1
+            echo "screendump /tmp/comandos.ppm"
+            sleep 1
             # Teclado español: echo hola ñandú ¿qué?
             for k in e c h o spc h o l a spc semicolon a n d apostrophe u spc shift-equal q u apostrophe e shift-minus ret; do
               echo "sendkey $k"; sleep 0.3
@@ -63,12 +70,21 @@ jobs:
             echo "mouse_button 0"; sleep 1
             echo "screendump /tmp/raton.ppm"
             sleep 1
+            # Dock: baja hasta el icono de Archivos y haz clic
+            for i in 1 2 3 4 5 6; do echo "mouse_move -31 92"; sleep 0.4; done
+            sleep 1
+            echo "mouse_button 1"; sleep 0.5
+            echo "mouse_button 0"; sleep 1
+            echo "screendump /tmp/dock.ppm"
+            sleep 1
             echo "quit"
           ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -m 256 -vga std -display none -monitor stdio -no-reboot
           mkdir -p ../capturas
           convert /tmp/arranque.ppm ../capturas/arranque.png
           convert /tmp/ayuda.ppm ../capturas/ayuda.png
           convert /tmp/raton.ppm ../capturas/raton.png
+          convert /tmp/comandos.ppm ../capturas/comandos.png
+          convert /tmp/dock.ppm ../capturas/dock.png
 
       - name: Guardar las capturas en el repositorio
         if: github.ref == 'refs/heads/main'
