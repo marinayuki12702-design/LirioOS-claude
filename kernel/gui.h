@@ -10,6 +10,7 @@ typedef unsigned int   u32;
 typedef signed int     s32;
 
 #include "font.h"
+#include "fs.h"
 
 #define NO_BG 0xFFFFFFFFu
 
@@ -341,14 +342,13 @@ static void draw_desktop_icons(void)
 
 #define WIN_W 800
 #define WIN_H 480
-#define APP_W 460
-#define APP_H 250
 #define TITLE_H 34
 #define BODY_COLOR 0x241A3F
 #define APP_COLOR  0x2B2147
 
 static s32 win_x, win_y;            /* ventana del terminal */
 static s32 app_x, app_y;            /* ventana de aplicación (una a la vez) */
+static s32 app_w = 460, app_h = 250;
 static int term_vis = 1;            /* el terminal está a la vista */
 static int app_vis;                 /* hay una aplicación abierta */
 static int app_kind;                /* icono del dock que la abrió (1..4) */
@@ -524,7 +524,7 @@ static int con_mode(void)
     dock_geom(&dx, &dy, &dw, &dh);
     if (rects_overlap(con_px0, con_py0, CON_COLS * 8, CON_ROWS * 16, dx, dy - 36, dw, dh + 36)) return 2;
     if (app_vis && app_top &&
-        rects_overlap(con_px0, con_py0, CON_COLS * 8, CON_ROWS * 16, app_x - 8, app_y - 8, APP_W + 16, APP_H + 16))
+        rects_overlap(con_px0, con_py0, CON_COLS * 8, CON_ROWS * 16, app_x - 8, app_y - 8, app_w + 16, app_h + 16))
         return 2;
     return 1;
 }
@@ -639,6 +639,178 @@ static void draw_term(void)
     con_paint();
 }
 
+/* ---------- Explorador de archivos ---------- */
+
+#define EXP_COLS 5
+#define EXP_CW   108
+#define EXP_CH   96
+#define EXP_MAX  15
+#define EXP_UP   1000
+#define EXP_HOME 1001
+#define EXP_BACK 1002
+
+static char exp_dir[PATH_MAX];      /* carpeta que se está viendo ("" = raíz) */
+static char exp_file[PATH_MAX];     /* archivo abierto en el visor ("" = ninguno) */
+static int  exp_hover = -1;         /* elemento o botón bajo el ratón */
+
+static void exp_cell(int i, s32 *x, s32 *y)
+{
+    *x = app_x + 14 + (i % EXP_COLS) * EXP_CW;
+    *y = app_y + 88 + (i / EXP_COLS) * EXP_CH;
+}
+
+/* Qué hay bajo (px, py) en el explorador: número de elemento, un botón (EXP_*) o -1 */
+static int exp_target(s32 px, s32 py)
+{
+    char name[48];
+    int is_dir;
+
+    if (!app_vis || app_kind != 1) return -1;
+    if (px < app_x || px >= app_x + app_w || py < app_y || py >= app_y + app_h) return -1;
+    if (py >= app_y + 44 && py < app_y + 72) {
+        if (px >= app_x + 14 && px < app_x + 90) return exp_file[0] ? EXP_BACK : EXP_UP;
+        if (!exp_file[0] && px >= app_x + 98 && px < app_x + 174) return EXP_HOME;
+        return -1;
+    }
+    if (exp_file[0]) return -1;
+    for (int i = 0; i < EXP_MAX && fs_entry(exp_dir, (u32)i, name, &is_dir); i++) {
+        s32 cx, cy;
+        exp_cell(i, &cx, &cy);
+        if (px >= cx && px < cx + EXP_CW && py >= cy && py < cy + EXP_CH) return i;
+    }
+    return -1;
+}
+
+static void explorer_click(int t)
+{
+    char name[48], path[PATH_MAX];
+    int is_dir;
+
+    if (t == EXP_UP) {
+        fs_parent(exp_dir);
+    } else if (t == EXP_HOME) {
+        exp_dir[0] = 0;
+    } else if (t == EXP_BACK) {
+        exp_file[0] = 0;
+    } else if (t >= 0 && fs_entry(exp_dir, (u32)t, name, &is_dir)) {
+        fs_join(exp_dir, name, path);
+        char *dst = is_dir ? exp_dir : exp_file;
+        u32 k = 0;
+        while (path[k]) { dst[k] = path[k]; k++; }
+        dst[k] = 0;
+    }
+    exp_hover = -1;
+}
+
+static void draw_button(s32 x, s32 y, s32 w, const char *label, int hot, int dim)
+{
+    fill_rrect(x, y, w, 28, 9, dim ? 0x3A2D63 : (hot ? 0x9B7BE6 : 0x5B4A9A), 255);
+    draw_text(x + (w - text_width(label, 1)) / 2, y + 6, label, dim ? 0x9C8FCF : 0xFFFFFF, 1);
+}
+
+static void draw_folder_icon(s32 cx, s32 top)
+{
+    fill_rrect(cx - 30, top, 24, 10, 4, 0xF2A8D2, 255);
+    fill_rrect(cx - 32, top + 6, 64, 44, 8, 0xFFC2E2, 255);
+    fill_rect(cx - 22, top + 24, 44, 4, 0xE58EBF, 255);
+}
+
+static void draw_file_icon(s32 cx, s32 top)
+{
+    fill_rrect(cx - 21, top + 2, 42, 52, 6, 0xF0E8FF, 255);
+    for (s32 i = 0; i < 3; i++)
+        fill_rect(cx - 13, top + 18 + i * 10, 26, 3, 0xB9A2F5, 255);
+    fill_rrect(cx - 21, top + 2, 42, 10, 6, 0xD9C8FF, 255);
+}
+
+/* Escribe un texto con saltos de línea, cortando donde no cabe */
+static void draw_wrapped(s32 x, s32 y, s32 maxcols, s32 maxlines, const char *s, u32 color)
+{
+    s32 col = 0, line = 0;
+    while (*s && line < maxlines) {
+        u32 c = next_char(&s);
+        if (c == '\n') { col = 0; line++; continue; }
+        if (col >= maxcols) {
+            col = 0;
+            line++;
+            if (line >= maxlines) break;
+        }
+        draw_glyph(x + col * 8, y + line * 18, c, color, NO_BG, 1);
+        col++;
+    }
+}
+
+static void draw_explorer(void)
+{
+    s32 x = app_x, y = app_y, w = app_w, h = app_h;
+    int viewing = exp_file[0] != 0;
+    char bar[PATH_MAX + 2];
+    u32 k = 0;
+
+    draw_frame(x, y, w, h, "Archivos", APP_COLOR, app_top);
+
+    if (viewing) {
+        draw_button(x + 14, y + 44, 76, "Volver", exp_hover == EXP_BACK, 0);
+    } else {
+        draw_button(x + 14, y + 44, 76, "Subir", exp_hover == EXP_UP, exp_dir[0] == 0);
+        draw_button(x + 98, y + 44, 76, "Inicio", exp_hover == EXP_HOME, 0);
+    }
+
+    bar[k++] = '/';
+    for (const char *p = viewing ? exp_file : exp_dir; *p && k < PATH_MAX; p++) bar[k++] = *p;
+    bar[k] = 0;
+    fill_rrect(x + 182, y + 44, w - 196, 28, 9, 0x241A3F, 255);
+    draw_text(x + 194, y + 50, bar, 0xD9C8FF, 1);
+
+    if (viewing) {
+        const struct ramfs_file *f = fs_file(exp_file);
+        fill_rrect(x + 14, y + 88, w - 28, h - 102, 10, 0x1E1535, 255);
+        draw_wrapped(x + 28, y + 102, (w - 56) / 8, (h - 130) / 18,
+                     f ? f->data : "(el archivo no existe)", 0xF0E8FF);
+        return;
+    }
+
+    char name[48];
+    int is_dir;
+    u32 count = 0;
+    for (int i = 0; i < EXP_MAX && fs_entry(exp_dir, (u32)i, name, &is_dir); i++) {
+        s32 cx, cy;
+        exp_cell(i, &cx, &cy);
+        if (exp_hover == i) fill_rrect(cx + 4, cy + 4, EXP_CW - 8, EXP_CH - 8, 12, 0xFFFFFF, 45);
+        if (is_dir) draw_folder_icon(cx + EXP_CW / 2, cy + 12);
+        else        draw_file_icon(cx + EXP_CW / 2, cy + 10);
+
+        char shown[16];
+        u32 n = slen(name);
+        if (n > 12) {                                   /* nombre largo: se acorta con ".." */
+            for (u32 j = 0; j < 10; j++) shown[j] = name[j];
+            shown[10] = '.'; shown[11] = '.'; shown[12] = 0;
+        } else {
+            for (u32 j = 0; j <= n; j++) shown[j] = name[j];
+        }
+        draw_text(cx + EXP_CW / 2 - text_width(shown, 1) / 2, cy + 70, shown, 0xFFFFFF, 1);
+        count++;
+    }
+
+    if (count == 0) {
+        const char *msg = "Esta carpeta está vacía";
+        draw_text(x + (w - text_width(msg, 1)) / 2, y + 180, msg, 0xB9A2F5, 1);
+    }
+
+    char st[24];
+    u32 si = 0;
+    char digits[8];
+    int dn = 0;
+    u32 v = count;
+    if (v == 0) digits[dn++] = '0';
+    while (v > 0) { digits[dn++] = (char)('0' + v % 10); v /= 10; }
+    while (dn > 0) st[si++] = digits[--dn];
+    const char *unit = count == 1 ? " elemento" : " elementos";
+    for (u32 j = 0; unit[j]; j++) st[si++] = unit[j];
+    st[si] = 0;
+    draw_text(x + 16, y + h - 26, st, 0xB9A2F5, 1);
+}
+
 static const char *const app_lines[DOCK_N][3] = {
     { 0, 0, 0 },
     { "Aquí irá el explorador de archivos.", "Necesita leer discos (FAT32).", "Mientras tanto, usa 'ls' y 'cat' en el terminal." },
@@ -649,15 +821,16 @@ static const char *const app_lines[DOCK_N][3] = {
 
 static void draw_app(void)
 {
+    if (app_kind == 1) { draw_explorer(); return; }
     const char *name = dock_names[app_kind];
-    draw_frame(app_x, app_y, APP_W, APP_H, name, APP_COLOR, app_top);
-    draw_text(app_x + (APP_W - text_width(name, 2)) / 2, app_y + 56, name, 0xFF9BD2, 2);
+    draw_frame(app_x, app_y, app_w, app_h, name, APP_COLOR, app_top);
+    draw_text(app_x + (app_w - text_width(name, 2)) / 2, app_y + 56, name, 0xFF9BD2, 2);
     for (int i = 0; i < 3; i++) {
         const char *l = app_lines[app_kind][i];
-        if (l) draw_text(app_x + (APP_W - text_width(l, 1)) / 2, app_y + 108 + i * 22, l, 0xF0E8FF, 1);
+        if (l) draw_text(app_x + (app_w - text_width(l, 1)) / 2, app_y + 108 + i * 22, l, 0xF0E8FF, 1);
     }
-    fill_rrect(app_x + APP_W / 2 - 62, app_y + APP_H - 50, 124, 26, 13, 0x7C5CD0, 255);
-    draw_text(app_x + (APP_W - text_width("Próximamente", 1)) / 2, app_y + APP_H - 45, "Próximamente", 0xFFFFFF, 1);
+    fill_rrect(app_x + app_w / 2 - 62, app_y + app_h - 50, 124, 26, 13, 0x7C5CD0, 255);
+    draw_text(app_x + (app_w - text_width("Próximamente", 1)) / 2, app_y + app_h - 45, "Próximamente", 0xFFFFFF, 1);
 }
 
 /* Compone el escritorio entero en la memoria intermedia: fondo guardado + iconos + ventanas + dock */
@@ -680,7 +853,7 @@ static int win_visible(int w) { return w == 0 ? term_vis : app_vis; }
 static void win_geom(int w, s32 *x, s32 *y, s32 *ww, s32 *hh)
 {
     if (w == 0) { *x = win_x; *y = win_y; *ww = WIN_W; *hh = WIN_H; }
-    else        { *x = app_x; *y = app_y; *ww = APP_W; *hh = APP_H; }
+    else        { *x = app_x; *y = app_y; *ww = app_w; *hh = app_h; }
 }
 
 static void win_set_pos(int w, s32 x, s32 y)
@@ -692,7 +865,7 @@ static void win_set_pos(int w, s32 x, s32 y)
 static void win_default(int w)
 {
     if (w == 0) win_set_pos(0, (fb_w - WIN_W) / 2, 44);
-    else        win_set_pos(1, (fb_w - APP_W) / 2 + 80, 150);
+    else        win_set_pos(1, (fb_w - app_w) / 2 + 60, 100);
 }
 
 static void win_hide(int w)
@@ -726,6 +899,21 @@ static void draw_desktop(void)
     present();
 }
 
+static void open_app(int kind)
+{
+    app_kind = kind;
+    app_vis = 1;
+    app_w = (kind == 1) ? 580 : 460;
+    app_h = (kind == 1) ? 400 : 250;
+    if (kind == 1) {
+        exp_dir[0] = 0;
+        exp_file[0] = 0;
+        exp_hover = -1;
+    }
+    win_default(1);
+    win_raise(1);
+}
+
 /* Clic en un icono del dock */
 static void dock_click(int i)
 {
@@ -737,10 +925,7 @@ static void dock_click(int i)
         if (app_top) app_vis = 0;
         else         win_raise(1);
     } else {
-        app_kind = i;
-        app_vis = 1;
-        win_default(1);
-        win_raise(1);
+        open_app(i);
     }
 }
 
@@ -764,12 +949,18 @@ static void gui_mouse(s32 dx, s32 dy, u8 buttons)
         dock_hover = hv;
         redraw = 1;
     }
+    int et = (app_vis && app_top) ? exp_target(nx, ny) : -1;
+    if (et != exp_hover) {
+        exp_hover = et;
+        redraw = 1;
+    }
 
     if (left && !left_before) {
         if (hv >= 0) {
             dock_click(hv);
             redraw = 1;
         } else {
+            int consumed = 0;
             for (int k = 0; k < 2; k++) {                  /* de la ventana de arriba a la de abajo */
                 int w = (k == 0) ? (app_top ? 1 : 0) : (app_top ? 0 : 1);
                 s32 x, y, ww, hh;
@@ -790,10 +981,20 @@ static void gui_mouse(s32 dx, s32 dy, u8 buttons)
                         win_raise(w);
                     }
                 } else {
+                    int was_top = (w == (app_top ? 1 : 0));
                     win_raise(w);
+                    if (w == 1 && was_top) {               /* el clic llega a lo que haya dentro */
+                        int t = exp_target(nx, ny);
+                        if (t != -1) explorer_click(t);
+                    }
                 }
+                consumed = 1;
                 redraw = 1;
                 break;
+            }
+            if (!consumed && nx >= 20 && nx < 76 && ny >= 48 && ny < 112) {   /* icono "Inicio" del escritorio */
+                open_app(1);
+                redraw = 1;
             }
         }
     }

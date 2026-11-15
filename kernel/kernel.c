@@ -14,14 +14,6 @@ static inline void outb(u16 port, u8 val)
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
 }
 
-/* ---------- Cadenas ---------- */
-
-static int str_eq(const char *a, const char *b)
-{
-    while (*a && *a == *b) { a++; b++; }
-    return *a == *b;
-}
-
 /* ---------- Teclado español (consulta directa, juego de códigos 1) ---------- */
 
 #define DEAD_ACUTE  0x81
@@ -246,60 +238,9 @@ static void put_num2(u32 n, u8 attr)           /* siempre con dos cifras: 05 */
     con_putc((u8)('0' + n % 10), attr);
 }
 
-static u32 slen(const char *s)
-{
-    u32 n = 0;
-    while (s[n]) n++;
-    return n;
-}
-
-/* ---------- Sistema de archivos en memoria (ramfs) con carpetas ---------- */
-
-struct ramfs_file {
-    const char *path;      /* sin barra inicial: "docs/lirio.txt" */
-    const char *data;      /* texto UTF-8 */
-};
-
-static const struct ramfs_file ramfs[] = {
-    { "bienvenida.txt",
-      "Bienvenida a LirioOS.\nEste es un kernel nuevo, escrito desde cero.\nEscribe 'ayuda' para ver los comandos.\n" },
-    { "docs/lirio.txt",
-      "El lirio es una flor elegante. Este sistema quiere serlo también.\n" },
-    { "docs/pendiente.txt",
-      "Siguientes pasos: aplicaciones, FAT32 de solo lectura, disco y procesos.\n" },
-    { "docs/kernel.txt",
-      "Kernel propio de LirioOS: C y ensamblador, x86 de 32 bits.\nModo gráfico, teclado español, ratón PS/2 y ventanas.\n" },
-};
-
-#define RAMFS_COUNT (sizeof(ramfs) / sizeof(ramfs[0]))
-#define PATH_MAX 96
+/* ---------- Carpeta actual del terminal (el sistema de archivos está en fs.h) ---------- */
 
 static char cwd[PATH_MAX];                     /* carpeta actual; vacío = raíz */
-
-/* ¿Está 'file' dentro de la carpeta 'dir'? (la raíz es "") */
-static int in_dir(const char *file, const char *dir)
-{
-    u32 n = slen(dir);
-    if (n == 0) return 1;
-    for (u32 i = 0; i < n; i++)
-        if (file[i] != dir[i]) return 0;
-    return file[n] == '/';
-}
-
-static int fs_is_dir(const char *path)
-{
-    if (path[0] == 0) return 1;
-    for (u32 i = 0; i < RAMFS_COUNT; i++)
-        if (in_dir(ramfs[i].path, path)) return 1;
-    return 0;
-}
-
-static const struct ramfs_file *fs_file(const char *path)
-{
-    for (u32 i = 0; i < RAMFS_COUNT; i++)
-        if (str_eq(ramfs[i].path, path)) return &ramfs[i];
-    return 0;
-}
 
 /* Convierte 'arg' (relativo a la carpeta actual o absoluto) en un camino limpio, sin barras
  * sobrantes y con los "." y ".." resueltos. Devuelve 0 si es demasiado largo. */
@@ -347,32 +288,16 @@ static int path_resolve(const char *arg, char *out)
 
 static void cmd_ls(const char *dir)
 {
-    u32 base = dir[0] ? slen(dir) + 1 : 0;
-    int shown = 0;
+    char name[48];
+    int is_dir;
+    u32 i = 0;
 
-    for (u32 i = 0; i < RAMFS_COUNT; i++) {
-        if (!in_dir(ramfs[i].path, dir)) continue;
-        const char *rest = ramfs[i].path + base;
-        u32 n = 0;
-        while (rest[n] && rest[n] != '/') n++;
-        int is_sub = rest[n] == '/';
-        int dup = 0;
-        if (is_sub) {                              /* una carpeta se muestra una sola vez */
-            for (u32 j = 0; j < i && !dup; j++) {
-                if (!in_dir(ramfs[j].path, dir)) continue;
-                const char *r2 = ramfs[j].path + base;
-                u32 k = 0;
-                while (k < n && r2[k] == rest[k]) k++;
-                if (k == n && r2[n] == '/') dup = 1;
-            }
-        }
-        if (dup) continue;
-        for (u32 k = 0; k < n; k++) con_putc((u8)rest[k], is_sub ? ATTR_SOFT : ATTR_NORMAL);
-        if (is_sub) con_putc('/', ATTR_SOFT);
+    while (fs_entry(dir, i++, name, &is_dir)) {
+        put_latin1(name, is_dir ? ATTR_SOFT : ATTR_NORMAL);
+        if (is_dir) con_putc('/', ATTR_SOFT);
         con_putc('\n', ATTR_NORMAL);
-        shown = 1;
     }
-    if (!shown) con_print("(vacía)\n", ATTR_SOFT);
+    if (i == 1) con_print("(vacía)\n", ATTR_SOFT);
 }
 
 /* ---------- Reloj de la máquina (RTC) ---------- */
