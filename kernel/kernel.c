@@ -353,7 +353,7 @@ static void banner(void)
     con_print(" | |   | | '__| |/ _ \\  | | | \\___ \\ \n", ATTR_PROMPT);
     con_print(" | |___| | |  | | (_) | | |_| |___) |\n", ATTR_PROMPT);
     con_print(" |_____|_|_|  |_|\\___/   \\___/|____/ \n\n", ATTR_PROMPT);
-    con_print("LirioOS kernel 0.4 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
+    con_print("LirioOS kernel 0.6 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
 }
 
 static const char *const known_cmds[] = {
@@ -459,6 +459,8 @@ static void run_command(const char *line)
             con_print("uso: cat <archivo>\n", ATTR_NORMAL);
         } else if (!path_resolve(arg, path)) {
             con_print("cat: ruta demasiado larga\n", ATTR_NORMAL);
+        } else if (fs_file(path) && fs_file(path)->img) {
+            con_print("cat: es una imagen: ábrela desde Archivos (dock)\n", ATTR_NORMAL);
         } else if (fs_file(path)) {
             con_print(fs_file(path)->data, ATTR_NORMAL);
         } else if (fs_is_dir(path)) {
@@ -476,11 +478,11 @@ static void run_command(const char *line)
     } else if (str_eq(cmd, "whoami")) {
         con_print("lirio\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "uname")) {
-        con_print("LirioOS 0.4 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
+        con_print("LirioOS 0.6 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "clear") || str_eq(cmd, "limpiar")) {
         con_clear();
     } else if (str_eq(cmd, "about")) {
-        con_print("LirioOS 0.4 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
+        con_print("LirioOS 0.6 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "reboot") || str_eq(cmd, "reiniciar")) {
         outb(0x64, 0xFE);
     } else if (str_eq(cmd, "halt") || str_eq(cmd, "apagar")) {

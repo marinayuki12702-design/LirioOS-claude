@@ -4,6 +4,8 @@
 #ifndef LIRIO_FS_H
 #define LIRIO_FS_H
 
+#include "images.h"
+
 #define PATH_MAX 96
 
 static int str_eq(const char *a, const char *b)
@@ -21,24 +23,28 @@ static u32 slen(const char *s)
 
 struct ramfs_file {
     const char *path;      /* sin barra inicial: "docs/lirio.txt" */
-    const char *data;      /* texto UTF-8 */
+    const char *data;      /* texto UTF-8 (0 si es una imagen) */
+    const struct img *img; /* imagen (0 si es texto) */
 };
 
 static const struct ramfs_file ramfs[] = {
     { "bienvenida.txt",
-      "Bienvenida a LirioOS.\nEste es un kernel nuevo, escrito desde cero.\nEscribe 'ayuda' para ver los comandos.\n" },
+      "Bienvenida a LirioOS.\nEste es un kernel nuevo, escrito desde cero.\nEscribe 'ayuda' para ver los comandos.\n", 0 },
     { "docs/lirio.txt",
-      "El lirio es una flor elegante. Este sistema quiere serlo también.\n" },
+      "El lirio es una flor elegante. Este sistema quiere serlo también.\n", 0 },
     { "docs/pendiente.txt",
-      "Siguientes pasos: aplicaciones, FAT32 de solo lectura, disco y procesos.\n" },
+      "Siguientes pasos: aplicaciones, FAT32 de solo lectura, disco y procesos.\n", 0 },
     { "docs/kernel.txt",
-      "Kernel propio de LirioOS: C y ensamblador, x86 de 32 bits.\nModo gráfico, teclado español, ratón PS/2 y ventanas.\n" },
+      "Kernel propio de LirioOS: C y ensamblador, x86 de 32 bits.\nModo gráfico, teclado español, ratón PS/2 y ventanas.\n", 0 },
     { "docs/poema.txt",
-      "El lirio abre en silencio\nsu luz de lila y de lluvia.\nNadie lo ve amanecer,\npero el jardín lo adivina.\n" },
+      "El lirio abre en silencio\nsu luz de lila y de lluvia.\nNadie lo ve amanecer,\npero el jardín lo adivina.\n", 0 },
+    { "imagenes/lirio.img", 0, &img_lirio },
+    { "imagenes/olas.img", 0, &img_olas },
+    { "imagenes/destellos.img", 0, &img_destellos },
     { "notas/ideas.txt",
-      "Ideas para LirioOS:\n- Un visor de imágenes.\n- Un editor de texto.\n- Un reproductor de música.\n" },
+      "Ideas para LirioOS:\n- Un visor de imágenes (hecho).\n- Un editor de texto.\n- Un reproductor de música.\n", 0 },
     { "notas/lista.txt",
-      "Hecho:\n- Kernel con modo gráfico.\n- Teclado español y ratón.\n- Dock y ventanas.\n\nPor hacer:\n- Disco y FAT32.\n- Interrupciones.\n" },
+      "Hecho:\n- Kernel con modo gráfico.\n- Teclado español y ratón.\n- Dock y ventanas.\n\nPor hacer:\n- Disco y FAT32.\n- Interrupciones.\n", 0 },
 };
 
 #define RAMFS_COUNT (sizeof(ramfs) / sizeof(ramfs[0]))

@@ -648,6 +648,8 @@ static void draw_term(void)
 #define EXP_UP   1000
 #define EXP_HOME 1001
 #define EXP_BACK 1002
+#define EXP_PREV 1003
+#define EXP_NEXT 1004
 
 static char exp_dir[PATH_MAX];      /* carpeta que se está viendo ("" = raíz) */
 static char exp_file[PATH_MAX];     /* archivo abierto en el visor ("" = ninguno) */
@@ -658,6 +660,8 @@ static void exp_cell(int i, s32 *x, s32 *y)
     *x = app_x + 14 + (i % EXP_COLS) * EXP_CW;
     *y = app_y + 88 + (i / EXP_COLS) * EXP_CH;
 }
+
+static int exp_is_img(void);
 
 /* Qué hay bajo (px, py) en el explorador: número de elemento, un botón (EXP_*) o -1 */
 static int exp_target(s32 px, s32 py)
@@ -670,6 +674,8 @@ static int exp_target(s32 px, s32 py)
     if (py >= app_y + 44 && py < app_y + 72) {
         if (px >= app_x + 14 && px < app_x + 90) return exp_file[0] ? EXP_BACK : EXP_UP;
         if (!exp_file[0] && px >= app_x + 98 && px < app_x + 174) return EXP_HOME;
+        if (exp_is_img() && px >= app_x + 98 && px < app_x + 174) return EXP_PREV;
+        if (exp_is_img() && px >= app_x + 182 && px < app_x + 266) return EXP_NEXT;
         return -1;
     }
     if (exp_file[0]) return -1;
@@ -679,6 +685,56 @@ static int exp_target(s32 px, s32 py)
         if (px >= cx && px < cx + EXP_CW && py >= cy && py < cy + EXP_CH) return i;
     }
     return -1;
+}
+
+/* ¿El archivo abierto en el visor es una imagen? */
+static int exp_is_img(void)
+{
+    const struct ramfs_file *f = exp_file[0] ? fs_file(exp_file) : 0;
+    return f && f->img;
+}
+
+/* Pasa a la imagen anterior (-1) o siguiente (+1) de la carpeta, dando la vuelta al llegar al final */
+static void exp_step(int dir)
+{
+    char name[48], path[PATH_MAX];
+    int is_dir, total = 0, cur = -1;
+
+    for (u32 i = 0; fs_entry(exp_dir, i, name, &is_dir); i++) {
+        if (is_dir) continue;
+        fs_join(exp_dir, name, path);
+        const struct ramfs_file *f = fs_file(path);
+        if (!f || !f->img) continue;
+        if (str_eq(path, exp_file)) cur = total;
+        total++;
+    }
+    if (total < 2 || cur < 0) return;
+    int want = (cur + dir + total) % total, n = 0;
+    for (u32 i = 0; fs_entry(exp_dir, i, name, &is_dir); i++) {
+        if (is_dir) continue;
+        fs_join(exp_dir, name, path);
+        const struct ramfs_file *f = fs_file(path);
+        if (!f || !f->img) continue;
+        if (n++ != want) continue;
+        u32 k = 0;
+        while (path[k]) { exp_file[k] = path[k]; k++; }
+        exp_file[k] = 0;
+        return;
+    }
+}
+
+/* Dibuja una imagen ajustada (sin deformarla) y centrada dentro del recuadro bw x bh */
+static void draw_image_fit(const struct img *im, s32 x, s32 y, s32 bw, s32 bh)
+{
+    s32 dw = bw, dh = (s32)im->h * bw / (s32)im->w;
+    if (dh > bh) { dh = bh; dw = (s32)im->w * bh / (s32)im->h; }
+    if (dw < 1 || dh < 1) return;
+    s32 ox = x + (bw - dw) / 2, oy = y + (bh - dh) / 2;
+    for (s32 j = 0; j < dh; j++) {
+        const u8 *row = im->idx + (u32)(j * (s32)im->h / dh) * im->w;
+        for (s32 i = 0; i < dw; i++)
+            px_set(ox + i, oy + j, im->pal[row[i * (s32)im->w / dw]]);
+    }
 }
 
 static void explorer_click(int t)
@@ -692,6 +748,8 @@ static void explorer_click(int t)
         exp_dir[0] = 0;
     } else if (t == EXP_BACK) {
         exp_file[0] = 0;
+    } else if (t == EXP_PREV || t == EXP_NEXT) {
+        exp_step(t == EXP_NEXT ? 1 : -1);
     } else if (t >= 0 && fs_entry(exp_dir, (u32)t, name, &is_dir)) {
         fs_join(exp_dir, name, path);
         char *dst = is_dir ? exp_dir : exp_file;
@@ -749,8 +807,15 @@ static void draw_explorer(void)
 
     draw_frame(x, y, w, h, "Archivos", APP_COLOR, app_top);
 
+    int img_view = viewing && exp_is_img();
+    s32 bar_x = x + 182;
     if (viewing) {
         draw_button(x + 14, y + 44, 76, "Volver", exp_hover == EXP_BACK, 0);
+        if (img_view) {
+            draw_button(x + 98, y + 44, 76, "Anterior", exp_hover == EXP_PREV, 0);
+            draw_button(x + 182, y + 44, 84, "Siguiente", exp_hover == EXP_NEXT, 0);
+            bar_x = x + 274;
+        }
     } else {
         draw_button(x + 14, y + 44, 76, "Subir", exp_hover == EXP_UP, exp_dir[0] == 0);
         draw_button(x + 98, y + 44, 76, "Inicio", exp_hover == EXP_HOME, 0);
@@ -759,12 +824,29 @@ static void draw_explorer(void)
     bar[k++] = '/';
     for (const char *p = viewing ? exp_file : exp_dir; *p && k < PATH_MAX; p++) bar[k++] = *p;
     bar[k] = 0;
-    fill_rrect(x + 182, y + 44, w - 196, 28, 9, 0x241A3F, 255);
-    draw_text(x + 194, y + 50, bar, 0xD9C8FF, 1);
+    fill_rrect(bar_x, y + 44, x + w - 14 - bar_x, 28, 9, 0x241A3F, 255);
+    draw_text(bar_x + 12, y + 50, bar, 0xD9C8FF, 1);
 
     if (viewing) {
         const struct ramfs_file *f = fs_file(exp_file);
         fill_rrect(x + 14, y + 88, w - 28, h - 102, 10, 0x1E1535, 255);
+        if (f && f->img) {
+            draw_image_fit(f->img, x + 24, y + 98, w - 48, h - 146);
+            char cap[24];
+            u32 ci = 0;
+            u32 vals[2] = { f->img->w, f->img->h };
+            for (int q = 0; q < 2; q++) {
+                char dg[6]; int dn = 0; u32 v = vals[q];
+                while (v > 0) { dg[dn++] = (char)('0' + v % 10); v /= 10; }
+                while (dn > 0) cap[ci++] = dg[--dn];
+                if (q == 0) cap[ci++] = 'x';
+            }
+            const char *tail = " píxeles";
+            for (u32 j = 0; tail[j]; j++) cap[ci++] = tail[j];
+            cap[ci] = 0;
+            draw_text(x + (w - text_width(cap, 1)) / 2, y + h - 40, cap, 0xB9A2F5, 1);
+            return;
+        }
         draw_wrapped(x + 28, y + 102, (w - 56) / 8, (h - 130) / 18,
                      f ? f->data : "(el archivo no existe)", 0xF0E8FF);
         return;
@@ -777,8 +859,20 @@ static void draw_explorer(void)
         s32 cx, cy;
         exp_cell(i, &cx, &cy);
         if (exp_hover == i) fill_rrect(cx + 4, cy + 4, EXP_CW - 8, EXP_CH - 8, 12, 0xFFFFFF, 45);
-        if (is_dir) draw_folder_icon(cx + EXP_CW / 2, cy + 12);
-        else        draw_file_icon(cx + EXP_CW / 2, cy + 10);
+        const struct ramfs_file *tf = 0;
+        if (!is_dir) {
+            char tp[PATH_MAX];
+            fs_join(exp_dir, name, tp);
+            tf = fs_file(tp);
+        }
+        if (is_dir) {
+            draw_folder_icon(cx + EXP_CW / 2, cy + 12);
+        } else if (tf && tf->img) {
+            fill_rrect(cx + EXP_CW / 2 - 35, cy + 8, 70, 54, 8, 0x1E1535, 255);
+            draw_image_fit(tf->img, cx + EXP_CW / 2 - 32, cy + 11, 64, 48);
+        } else {
+            draw_file_icon(cx + EXP_CW / 2, cy + 10);
+        }
 
         char shown[16];
         u32 n = slen(name);
@@ -816,7 +910,7 @@ static const char *const app_lines[DOCK_N][3] = {
     { "Aquí irá el explorador de archivos.", "Necesita leer discos (FAT32).", "Mientras tanto, usa 'ls' y 'cat' en el terminal." },
     { "Aquí irá el navegador web.", "Necesita red (TCP/IP y TLS), que aún no existe.", 0 },
     { "Aquí irán los ajustes del sistema.", "Idioma del teclado, fondo y pantalla.", 0 },
-    { "Aquí irán más aplicaciones:", "galería de imágenes, vídeo y cámara.", 0 },
+    { "Más aplicaciones, poco a poco: vídeo y cámara.", "Las imágenes ya se abren desde Archivos > imagenes.", 0 },
 };
 
 static void draw_app(void)

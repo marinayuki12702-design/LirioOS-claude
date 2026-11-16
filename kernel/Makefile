@@ -9,7 +9,7 @@ all: lirioos-kernel.bin
 boot.o: boot.asm
 	$(AS) -f elf32 boot.asm -o boot.o
 
-kernel.o: kernel.c gui.h font.h
+kernel.o: kernel.c gui.h font.h fs.h images.h
 	$(CC) $(CFLAGS) -c kernel.c -o kernel.o
 
 lirioos-kernel.bin: boot.o kernel.o linker.ld gui.h font.h

@@ -88,6 +88,24 @@ jobs:
             echo "mouse_button 0"; sleep 1
             echo "screendump /tmp/visor.ppm"
             sleep 1
+            # Galería: lleva el cursor a la esquina (0,0) y desde ahí a cada botón
+            for i in 1 2 3 4 5 6 7 8; do echo "mouse_move -200 -200"; sleep 0.2; done
+            sleep 1
+            for i in 1 2; do echo "mouse_move 167 79"; sleep 0.3; done        # botón Volver (334,158)
+            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 0.8   # Volver
+            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 0.8   # Subir a la raíz
+            echo "mouse_move 124 78"; sleep 0.5                                  # carpeta imagenes
+            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 1
+            echo "screendump /tmp/galeria.ppm"
+            sleep 1
+            echo "mouse_move -108 0"; sleep 0.5                                  # primera imagen
+            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 1
+            echo "screendump /tmp/imagen.ppm"
+            sleep 1
+            echo "mouse_move 154 -78"; sleep 0.5                                 # botón Siguiente
+            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 1
+            echo "screendump /tmp/imagen2.ppm"
+            sleep 1
             echo "quit"
           ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -m 256 -vga std -display none -monitor stdio -no-reboot
           mkdir -p ../capturas
@@ -98,6 +116,9 @@ jobs:
           convert /tmp/dock.ppm ../capturas/dock.png
           convert /tmp/explorador.ppm ../capturas/explorador.png
           convert /tmp/visor.ppm ../capturas/visor.png
+          convert /tmp/galeria.ppm ../capturas/galeria.png
+          convert /tmp/imagen.ppm ../capturas/imagen.png
+          convert /tmp/imagen2.ppm ../capturas/imagen2.png
 
       - name: Guardar las capturas en el repositorio
         if: github.ref == 'refs/heads/main'
@@ -134,6 +155,7 @@ jobs:
           files: |
             kernel/LirioOS-kernel.iso
             capturas/raton.png
+            capturas/galeria.png
           body: |
             ## LirioOS (kernel propio)
 
@@ -141,8 +163,10 @@ jobs:
 
             - Escritorio gráfico morado (1024x768), dock y terminal en ventana.
             - Teclado en español (ñ, tildes, AltGr).
-            - Sistema de archivos en memoria. Comandos: `ayuda`, `ls`, `cat`, `echo`, `limpiar`, `about`, `reiniciar`, `apagar`.
+            - Ratón, ventanas arrastrables, dock con clic y explorador de archivos gráfico.
+            - Galería de imágenes: abre Archivos > imagenes, con miniaturas y botones Anterior / Siguiente.
+            - Sistema de archivos en memoria. Comandos: `ayuda`, `ls`, `cd`, `cat`, `echo`, `date`, `limpiar`, `about`, `reiniciar`, `apagar`.
 
             **Cómo probarla en VirtualBox:** máquina nueva, tipo *Other*, versión *Other/Unknown*, sin disco duro, y pon `LirioOS-kernel.iso` en la unidad óptica. Si no ves el escritorio, activa **EFI desactivado** (modo BIOS clásico).
 
-            Versión 0.2, en desarrollo.
+            Versión de desarrollo (kernel 0.6).

@@ -8,6 +8,10 @@ Kernel propio, escrito en C y ensamblador para x86 de 32 bits. Arranca con GRUB 
 
 ![Captura real: un archivo abierto en el visor](../capturas/visor.png)
 
+![Captura real: la galería de imágenes con miniaturas](../capturas/galeria.png)
+
+![Captura real: una imagen abierta en el visor](../capturas/imagen.png)
+
 *Captura real del kernel arrancando en QEMU, generada automáticamente por el flujo de GitHub en cada cambio (carpeta `capturas/`).*
 
 ## Qué hace hoy
@@ -19,8 +23,9 @@ Kernel propio, escrito en C y ensamblador para x86 de 32 bits. Arranca con GRUB 
   - **dock con clic**: el icono del terminal lo esconde o lo trae al frente; Archivos abre el explorador y Navegador, Ajustes y Más abren una ventana "Próximamente"; aparece su nombre al pasar el ratón y un punto bajo las aplicaciones abiertas;
   - dos ventanas con orden de capas: la que pulsas pasa delante.
 - **Explorador de archivos** gráfico (dock → Archivos, o el icono Inicio del escritorio): carpetas y archivos como iconos, botones Subir, Inicio y Volver, barra con la ruta, resalte al pasar el ratón y visor de texto en la misma ventana. Se abre con **un solo clic** (el doble clic necesita un temporizador, que llegará con las interrupciones).
+- **Galería de imágenes** (Archivos → `imagenes`): miniaturas en la cuadrícula, visor con la imagen ajustada a la ventana y botones **Anterior** y **Siguiente**. Las imágenes de ejemplo (un lirio, olas con sol y un cielo de destellos) están dibujadas con código por `tools/gen_images.py` y se guardan con paleta de 256 colores.
 - Teclado **en español**: ñ, Ñ, ç, ¿ ¡, tildes y diéresis con las teclas muertas, Shift, Bloq Mayús, AltGr (`@ # | ~ { } [ ] \`) y flechas arriba/abajo para repetir comandos.
-- Sistema de archivos **en memoria** (ramfs) con carpetas: `bienvenida.txt` y `docs/`.
+- Sistema de archivos **en memoria** (ramfs) con carpetas: `bienvenida.txt`, `docs/`, `notas/` e `imagenes/`.
 - Terminal con `ayuda`, `ls [carpeta]`, `cd <carpeta>` (`..` y `/` también), `pwd`, `cat <archivo>`, `echo`, `date` (reloj de la máquina), `whoami`, `uname`, `limpiar`, `reiniciar` y `apagar`. Si te equivocas de comando, sugiere el correcto; los comandos de Linux (`sudo`, `apt`…) explican que LirioOS no es Linux.
 
 ## Archivos
@@ -31,6 +36,7 @@ Kernel propio, escrito en C y ensamblador para x86 de 32 bits. Arranca con GRUB 
 | `kernel.c` | Teclado, ratón, ramfs, terminal y arranque |
 | `gui.h` | Dibujo: pantalla, fondo, dock, ventanas, consola, cursor, ratón y explorador |
 | `fs.h` | Sistema de archivos en memoria (carpetas y archivos de solo lectura) |
+| `images.h` | Imágenes de ejemplo (generado por `tools/gen_images.py`, no editar a mano) |
 | `font.h` | Fuente 8x16 Latin-1 generada a partir de DejaVu Sans Mono (licencia libre) |
 | `gui_preview.c` | Genera una imagen del escritorio en un PC normal |
 
@@ -47,7 +53,7 @@ Para probarlo en VirtualBox: máquina nueva "Other/Unknown", sin disco, con esa 
 
 ## Hoja de ruta
 
-1. Más aplicaciones reales: visor de imágenes y editor de texto (el explorador ya existe).
+1. Más aplicaciones reales: editor de texto (el explorador y el visor de imágenes ya existen).
 2. Interrupciones (IDT, PIC, temporizador, teclado y ratón) en lugar de consultar en bucle.
 3. Memoria: mapa de memoria de Multiboot y un asignador sencillo.
 4. Disco (ATA) y lectura de FAT32; después crear y borrar archivos.
