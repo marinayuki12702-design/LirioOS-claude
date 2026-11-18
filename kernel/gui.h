@@ -650,10 +650,18 @@ static void draw_term(void)
 #define EXP_BACK 1002
 #define EXP_PREV 1003
 #define EXP_NEXT 1004
+#define EXP_NEW    1005
+#define EXP_EDIT   1006
+#define EXP_SAVE   1007
+#define EXP_CANCEL 1008
 
 static char exp_dir[PATH_MAX];      /* carpeta que se está viendo ("" = raíz) */
 static char exp_file[PATH_MAX];     /* archivo abierto en el visor ("" = ninguno) */
 static int  exp_hover = -1;         /* elemento o botón bajo el ratón */
+static int  exp_editing;            /* 1 = se está editando exp_file */
+static int  exp_err;                /* 1 = el último "Guardar" falló */
+static char ed_buf[FS_TEXT_MAX + 1];    /* texto en edición (UTF-8) */
+static u32  ed_len;
 
 static void exp_cell(int i, s32 *x, s32 *y)
 {
@@ -672,6 +680,13 @@ static int exp_target(s32 px, s32 py)
     if (!app_vis || app_kind != 1) return -1;
     if (px < app_x || px >= app_x + app_w || py < app_y || py >= app_y + app_h) return -1;
     if (py >= app_y + 44 && py < app_y + 72) {
+        if (exp_editing) {
+            if (px >= app_x + 14 && px < app_x + 98) return EXP_SAVE;
+            if (px >= app_x + 106 && px < app_x + 190) return EXP_CANCEL;
+            return -1;
+        }
+        if (!exp_file[0] && px >= app_x + 182 && px < app_x + 258) return EXP_NEW;
+        if (exp_file[0] && !exp_is_img() && px >= app_x + 98 && px < app_x + 174) return EXP_EDIT;
         if (px >= app_x + 14 && px < app_x + 90) return exp_file[0] ? EXP_BACK : EXP_UP;
         if (!exp_file[0] && px >= app_x + 98 && px < app_x + 174) return EXP_HOME;
         if (exp_is_img() && px >= app_x + 98 && px < app_x + 174) return EXP_PREV;
@@ -750,6 +765,36 @@ static void explorer_click(int t)
         exp_file[0] = 0;
     } else if (t == EXP_PREV || t == EXP_NEXT) {
         exp_step(t == EXP_NEXT ? 1 : -1);
+    } else if (t == EXP_NEW) {                        /* archivo nuevo: nuevo.txt, nuevo2.txt... (se crea al guardar) */
+        for (int n = 1; n < 100; n++) {
+            char nm[24];
+            u32 q = 0;
+            const char *b = "nuevo";
+            while (b[q]) { nm[q] = b[q]; q++; }
+            if (n > 1) { if (n >= 10) nm[q++] = (char)('0' + n / 10); nm[q++] = (char)('0' + n % 10); }
+            const char *e = ".txt";
+            for (u32 j = 0; e[j]; j++) nm[q++] = e[j];
+            nm[q] = 0;
+            fs_join(exp_dir, nm, path);
+            if (!fs_file(path)) break;
+        }
+        u32 k = 0;
+        while (path[k]) { exp_file[k] = path[k]; k++; }
+        exp_file[k] = 0;
+        ed_len = 0; ed_buf[0] = 0; exp_editing = 1; exp_err = 0;
+    } else if (t == EXP_EDIT) {
+        const struct ramfs_file *f = fs_file(exp_file);
+        ed_len = 0;
+        if (f && f->data)
+            while (f->data[ed_len] && ed_len < FS_TEXT_MAX) { ed_buf[ed_len] = f->data[ed_len]; ed_len++; }
+        ed_buf[ed_len] = 0;
+        exp_editing = 1; exp_err = 0;
+    } else if (t == EXP_SAVE) {
+        if (fs_write(exp_file, ed_buf)) exp_editing = 0;
+        else exp_err = 1;
+    } else if (t == EXP_CANCEL) {
+        exp_editing = 0;
+        if (!fs_file(exp_file)) exp_file[0] = 0;      /* un archivo nuevo sin guardar no existe */
     } else if (t >= 0 && fs_entry(exp_dir, (u32)t, name, &is_dir)) {
         fs_join(exp_dir, name, path);
         char *dst = is_dir ? exp_dir : exp_file;
@@ -798,6 +843,60 @@ static void draw_wrapped(s32 x, s32 y, s32 maxcols, s32 maxlines, const char *s,
     }
 }
 
+/* ---------- Editor de texto (dentro de la ventana de Archivos) ---------- */
+
+#define ED_COLS  ((app_w - 56) / 8)
+#define ED_LINES ((app_h - 130) / 18)
+
+/* Dónde queda el cursor al final del texto (mismo ajuste de líneas que al dibujar) */
+static void ed_layout(s32 *col, s32 *line)
+{
+    const char *s = ed_buf;
+    s32 c = 0, l = 0;
+    while (*s) {
+        u32 ch = next_char(&s);
+        if (ch == '\n') { c = 0; l++; continue; }
+        if (c >= ED_COLS) { c = 0; l++; }
+        c++;
+    }
+    if (c >= ED_COLS) { c = 0; l++; }
+    *col = c;
+    *line = l;
+}
+
+static void draw_editor_body(s32 x, s32 y, s32 w, s32 h)
+{
+    fill_rrect(x + 14, y + 88, w - 28, h - 102, 10, 0x1E1535, 255);
+    const char *s = ed_buf;
+    s32 c = 0, l = 0;
+    while (*s) {
+        u32 ch = next_char(&s);
+        if (ch == '\n') { c = 0; l++; continue; }
+        if (c >= ED_COLS) { c = 0; l++; }
+        if (l < ED_LINES) draw_glyph(x + 28 + c * 8, y + 102 + l * 18, ch, 0xF0E8FF, NO_BG, 1);
+        c++;
+    }
+    s32 cc, cl;
+    ed_layout(&cc, &cl);
+    if (cl < ED_LINES) fill_rect(x + 28 + cc * 8, y + 102 + cl * 18, 8, 16, 0xFF9BD2, 255);
+
+    char st[48];
+    u32 si = 0;
+    if (exp_err) {
+        const char *m = "No hay sitio para guardar más archivos";
+        while (*m) st[si++] = *m++;
+    } else {
+        char dg[8]; int dn = 0; u32 v = ed_len;
+        if (v == 0) dg[dn++] = '0';
+        while (v > 0) { dg[dn++] = (char)('0' + v % 10); v /= 10; }
+        while (dn > 0) st[si++] = dg[--dn];
+        const char *m = " letras - escribe con el teclado";
+        while (*m) st[si++] = *m++;
+    }
+    st[si] = 0;
+    draw_text(x + 16, y + h - 26, st, exp_err ? 0xFF9BD2 : 0xB9A2F5, 1);
+}
+
 static void draw_explorer(void)
 {
     s32 x = app_x, y = app_y, w = app_w, h = app_h;
@@ -809,8 +908,13 @@ static void draw_explorer(void)
 
     int img_view = viewing && exp_is_img();
     s32 bar_x = x + 182;
-    if (viewing) {
+    if (exp_editing) {
+        draw_button(x + 14, y + 44, 84, "Guardar", exp_hover == EXP_SAVE, 0);
+        draw_button(x + 106, y + 44, 84, "Cancelar", exp_hover == EXP_CANCEL, 0);
+        bar_x = x + 198;
+    } else if (viewing) {
         draw_button(x + 14, y + 44, 76, "Volver", exp_hover == EXP_BACK, 0);
+        if (!img_view) draw_button(x + 98, y + 44, 76, "Editar", exp_hover == EXP_EDIT, 0);
         if (img_view) {
             draw_button(x + 98, y + 44, 76, "Anterior", exp_hover == EXP_PREV, 0);
             draw_button(x + 182, y + 44, 84, "Siguiente", exp_hover == EXP_NEXT, 0);
@@ -819,6 +923,8 @@ static void draw_explorer(void)
     } else {
         draw_button(x + 14, y + 44, 76, "Subir", exp_hover == EXP_UP, exp_dir[0] == 0);
         draw_button(x + 98, y + 44, 76, "Inicio", exp_hover == EXP_HOME, 0);
+        draw_button(x + 182, y + 44, 76, "Nuevo", exp_hover == EXP_NEW, 0);
+        bar_x = x + 266;
     }
 
     bar[k++] = '/';
@@ -826,6 +932,8 @@ static void draw_explorer(void)
     bar[k] = 0;
     fill_rrect(bar_x, y + 44, x + w - 14 - bar_x, 28, 9, 0x241A3F, 255);
     draw_text(bar_x + 12, y + 50, bar, 0xD9C8FF, 1);
+
+    if (exp_editing) { draw_editor_body(x, y, w, h); return; }
 
     if (viewing) {
         const struct ramfs_file *f = fs_file(exp_file);
@@ -993,6 +1101,37 @@ static void draw_desktop(void)
     present();
 }
 
+/* Teclado para el editor: devuelve 1 si la tecla era para él (ventana de Archivos delante y editando) */
+static int gui_key(u32 c)
+{
+    if (!(app_vis && app_top && app_kind == 1 && exp_editing)) return 0;
+    if (c == '\b') {
+        while (ed_len > 0 && (((u8)ed_buf[ed_len - 1]) & 0xC0) == 0x80) ed_len--;
+        if (ed_len > 0) ed_len--;
+        ed_buf[ed_len] = 0;
+    } else if (c == '\n' || (c >= 32 && c < 256 && c != 127)) {
+        u32 need = (c < 128) ? 1 : 2;
+        if (ed_len + need > FS_TEXT_MAX) return 1;
+        u32 old = ed_len;
+        if (c < 128) {
+            ed_buf[ed_len++] = (char)c;
+        } else {
+            ed_buf[ed_len++] = (char)(0xC0 | (c >> 6));
+            ed_buf[ed_len++] = (char)(0x80 | (c & 0x3F));
+        }
+        ed_buf[ed_len] = 0;
+        s32 cc, cl;
+        ed_layout(&cc, &cl);
+        if (cl >= ED_LINES) { ed_len = old; ed_buf[ed_len] = 0; return 1; }   /* ya no cabe */
+    } else {
+        return 1;
+    }
+    exp_err = 0;
+    compose();
+    present();
+    return 1;
+}
+
 static void open_app(int kind)
 {
     app_kind = kind;
@@ -1003,6 +1142,7 @@ static void open_app(int kind)
         exp_dir[0] = 0;
         exp_file[0] = 0;
         exp_hover = -1;
+        exp_editing = 0;
     }
     win_default(1);
     win_raise(1);

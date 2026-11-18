@@ -106,6 +106,20 @@ jobs:
             echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 1
             echo "screendump /tmp/imagen2.ppm"
             sleep 1
+            # Editor: Volver, Subir a la raíz, Nuevo, escribir "hola ñandú" y Guardar
+            echo "mouse_move -170 0"; sleep 0.5                                  # botón Volver
+            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 0.8
+            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 0.8   # Subir
+            echo "mouse_move 168 0"; sleep 0.5                                   # botón Nuevo
+            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 1
+            for k in h o l a spc semicolon a n d apostrophe u; do echo "sendkey $k"; sleep 0.3; done
+            sleep 1
+            echo "screendump /tmp/editor.ppm"
+            sleep 1
+            echo "mouse_move -168 0"; sleep 0.5                                  # botón Guardar
+            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 1
+            echo "screendump /tmp/guardado.ppm"
+            sleep 1
             echo "quit"
           ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -m 256 -vga std -display none -monitor stdio -no-reboot
           mkdir -p ../capturas
@@ -119,6 +133,8 @@ jobs:
           convert /tmp/galeria.ppm ../capturas/galeria.png
           convert /tmp/imagen.ppm ../capturas/imagen.png
           convert /tmp/imagen2.ppm ../capturas/imagen2.png
+          convert /tmp/editor.ppm ../capturas/editor.png
+          convert /tmp/guardado.ppm ../capturas/guardado.png
 
       - name: Guardar las capturas en el repositorio
         if: github.ref == 'refs/heads/main'
@@ -156,6 +172,7 @@ jobs:
             kernel/LirioOS-kernel.iso
             capturas/raton.png
             capturas/galeria.png
+            capturas/editor.png
           body: |
             ## LirioOS (kernel propio)
 
@@ -165,8 +182,9 @@ jobs:
             - Teclado en español (ñ, tildes, AltGr).
             - Ratón, ventanas arrastrables, dock con clic y explorador de archivos gráfico.
             - Galería de imágenes: abre Archivos > imagenes, con miniaturas y botones Anterior / Siguiente.
+            - Editor de texto: en Archivos, **Editar** un .txt o **Nuevo** para crear uno, y **Guardar** (los cambios viven en memoria hasta que haya disco).
             - Sistema de archivos en memoria. Comandos: `ayuda`, `ls`, `cd`, `cat`, `echo`, `date`, `limpiar`, `about`, `reiniciar`, `apagar`.
 
             **Cómo probarla en VirtualBox:** máquina nueva, tipo *Other*, versión *Other/Unknown*, sin disco duro, y pon `LirioOS-kernel.iso` en la unidad óptica. Si no ves el escritorio, activa **EFI desactivado** (modo BIOS clásico).
 
-            Versión de desarrollo (kernel 0.6).
+            Versión de desarrollo (kernel 0.7).
