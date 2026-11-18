@@ -117,17 +117,6 @@ static s32 iabs(s32 v) { return v < 0 ? -v : v; }
 
 /* ---------- Copia a pantalla y cursor del ratón ---------- */
 
-static void blit_rect(s32 x, s32 y, s32 w, s32 h)
-{
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (x + w > fb_w) w = fb_w - x;
-    if (y + h > fb_h) h = fb_h - y;
-    for (s32 j = 0; j < h; j++)
-        for (s32 i = 0; i < w; i++)
-            scr[(u32)(y + j) * scr_pitch + (u32)(x + i)] = back_buf[(u32)(y + j) * (u32)fb_w + (u32)(x + i)];
-}
-
 #define CUR_W 12
 #define CUR_H 19
 
@@ -155,22 +144,30 @@ static const char *const cursor_sprite[CUR_H] = {
 
 static s32 mouse_x, mouse_y;
 
-static void cursor_draw(void)
-{
-    for (s32 j = 0; j < CUR_H; j++)
-        for (s32 i = 0; i < CUR_W; i++) {
-            char c = cursor_sprite[j][i];
-            s32 x = mouse_x + i, y = mouse_y + j;
-            if (c == ' ' || x >= fb_w || y >= fb_h) continue;
-            scr[(u32)y * scr_pitch + (u32)x] = pack(c == 'X' ? 0x2E2150 : 0xFFFFFF);
-        }
-}
-
-/* Copia una zona de la memoria intermedia a la pantalla y vuelve a poner el cursor encima */
+/* Copia una zona de la memoria intermedia a la pantalla con el cursor ya mezclado, de modo que cada
+ * píxel se escribe una sola vez con su valor final (así el cursor no desaparece ni parpadea). */
 static void present_rect(s32 x, s32 y, s32 w, s32 h)
 {
-    blit_rect(x, y, w, h);
-    cursor_draw();
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > fb_w) w = fb_w - x;
+    if (y + h > fb_h) h = fb_h - y;
+    for (s32 j = 0; j < h; j++) {
+        s32 py = y + j;
+        s32 cj = py - mouse_y;
+        const u32 *src = back_buf + (u32)py * (u32)fb_w;
+        volatile u32 *dst = scr + (u32)py * scr_pitch;
+        for (s32 i = 0; i < w; i++) {
+            s32 px = x + i;
+            u32 v = src[px];
+            s32 ci = px - mouse_x;
+            if (cj >= 0 && cj < CUR_H && ci >= 0 && ci < CUR_W) {
+                char c = cursor_sprite[cj][ci];
+                if (c != ' ') v = pack(c == 'X' ? 0x2E2150 : 0xFFFFFF);
+            }
+            dst[px] = v;
+        }
+    }
 }
 
 static void present(void)
@@ -183,8 +180,8 @@ static void cursor_move_to(s32 nx, s32 ny)
     s32 ox = mouse_x, oy = mouse_y;
     mouse_x = nx;
     mouse_y = ny;
-    blit_rect(ox, oy, CUR_W, CUR_H);
-    cursor_draw();
+    present_rect(ox, oy, CUR_W, CUR_H);     /* borra el cursor viejo */
+    present_rect(nx, ny, CUR_W, CUR_H);     /* y pone el nuevo, ya mezclado con el fondo */
 }
 
 /* ---------- Texto ---------- */
