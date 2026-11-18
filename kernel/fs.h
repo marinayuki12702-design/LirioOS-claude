@@ -25,39 +25,36 @@ struct ramfs_file {
     const char *path;      /* sin barra inicial: "docs/lirio.txt" */
     const char *data;      /* texto UTF-8 (0 si es una imagen) */
     const struct img *img; /* imagen (0 si es texto) */
+    u8 heap;               /* 1 = ruta y texto están en el montón (se pueden liberar) */
 };
 
-#define RAMFS_MAX 32
+#define RAMFS_MAX 128
 
 static struct ramfs_file ramfs[RAMFS_MAX] = {
     { "bienvenida.txt",
-      "Bienvenida a LirioOS.\nEste es un kernel nuevo, escrito desde cero.\nEscribe 'ayuda' para ver los comandos.\n", 0 },
+      "Bienvenida a LirioOS.\nEste es un kernel nuevo, escrito desde cero.\nEscribe 'ayuda' para ver los comandos.\n", 0, 0 },
     { "docs/lirio.txt",
-      "El lirio es una flor elegante. Este sistema quiere serlo también.\n", 0 },
+      "El lirio es una flor elegante. Este sistema quiere serlo también.\n", 0, 0 },
     { "docs/pendiente.txt",
-      "Siguientes pasos: aplicaciones, FAT32 de solo lectura, disco y procesos.\n", 0 },
+      "Siguientes pasos: aplicaciones, FAT32 de solo lectura, disco y procesos.\n", 0, 0 },
     { "docs/kernel.txt",
-      "Kernel propio de LirioOS: C y ensamblador, x86 de 32 bits.\nModo gráfico, teclado español, ratón PS/2 y ventanas.\n", 0 },
+      "Kernel propio de LirioOS: C y ensamblador, x86 de 32 bits.\nModo gráfico, teclado español, ratón PS/2 y ventanas.\n", 0, 0 },
     { "docs/poema.txt",
-      "El lirio abre en silencio\nsu luz de lila y de lluvia.\nNadie lo ve amanecer,\npero el jardín lo adivina.\n", 0 },
-    { "imagenes/lirio.img", 0, &img_lirio },
-    { "imagenes/olas.img", 0, &img_olas },
-    { "imagenes/destellos.img", 0, &img_destellos },
+      "El lirio abre en silencio\nsu luz de lila y de lluvia.\nNadie lo ve amanecer,\npero el jardín lo adivina.\n", 0, 0 },
+    { "imagenes/lirio.img", 0, &img_lirio, 0 },
+    { "imagenes/olas.img", 0, &img_olas, 0 },
+    { "imagenes/destellos.img", 0, &img_destellos, 0 },
     { "notas/ideas.txt",
-      "Ideas para LirioOS:\n- Un visor de imágenes (hecho).\n- Un editor de texto.\n- Un reproductor de música.\n", 0 },
+      "Ideas para LirioOS:\n- Un visor de imágenes (hecho).\n- Un editor de texto.\n- Un reproductor de música.\n", 0, 0 },
     { "notas/lista.txt",
-      "Hecho:\n- Kernel con modo gráfico.\n- Teclado español y ratón.\n- Dock y ventanas.\n\nPor hacer:\n- Disco y FAT32.\n- Interrupciones.\n", 0 },
+      "Hecho:\n- Kernel con modo gráfico.\n- Teclado español y ratón.\n- Dock y ventanas.\n\nPor hacer:\n- Disco y FAT32.\n- Interrupciones.\n", 0, 0 },
 };
 
 static u32 ramfs_n = 0;         /* cuántas entradas hay (se calcula la primera vez) */
 #define RAMFS_COUNT ramfs_n
 
-/* Archivos que se pueden escribir: guardan su texto en estos huecos de memoria */
-#define FS_SLOTS 8
-#define FS_TEXT_MAX 900
-static char fs_text[FS_SLOTS][FS_TEXT_MAX + 1];
-static char fs_names[FS_SLOTS][PATH_MAX];
-static u8   fs_used[FS_SLOTS];
+/* Los archivos que se crean o se editan guardan su ruta y su texto en el montón del kernel (mem.h) */
+#define FS_TEXT_MAX 4000
 
 static int fs_ready;
 
@@ -95,40 +92,37 @@ static const struct ramfs_file *fs_file(const char *path)
     return 0;
 }
 
-/* Guarda 'text' en el archivo 'path' (lo crea si no existe). Devuelve 1 si lo logró, 0 si no queda sitio. */
+/* Guarda 'text' en el archivo 'path' (lo crea si no existe). Devuelve 1 si lo logró, 0 si no cabe o no hay memoria. */
 static int fs_write(const char *path, const char *text)
 {
     fs_init();
-    if (slen(text) > FS_TEXT_MAX || slen(path) >= PATH_MAX) return 0;
+    u32 n = slen(text);
+    if (n > FS_TEXT_MAX || slen(path) >= PATH_MAX) return 0;
     struct ramfs_file *f = 0;
     for (u32 i = 0; i < ramfs_n; i++)
         if (str_eq(ramfs[i].path, path)) f = &ramfs[i];
     if (f && f->img) return 0;
+    if (!f && ramfs_n >= RAMFS_MAX) return 0;
 
-    int slot = -1;
-    if (f) {                                       /* ¿ya usa un hueco? */
-        for (int k = 0; k < FS_SLOTS; k++)
-            if (fs_used[k] && f->data == fs_text[k]) slot = k;
+    char *buf = (char *)kmalloc(n + 1);
+    if (!buf) return 0;
+    for (u32 i = 0; i <= n; i++) buf[i] = text[i];
+
+    if (f) {
+        if (f->heap) kfree((void *)f->data);       /* el texto viejo vuelve al montón */
+        f->data = buf;
+        f->heap = 1;
+        return 1;
     }
-    if (slot < 0) {
-        for (int k = 0; k < FS_SLOTS && slot < 0; k++)
-            if (!fs_used[k]) slot = k;
-        if (slot < 0) return 0;
-        if (!f && ramfs_n >= RAMFS_MAX) return 0;
-    }
-    u32 n = 0;
-    while (text[n]) { fs_text[slot][n] = text[n]; n++; }
-    fs_text[slot][n] = 0;
-    if (!f) {
-        u32 k = 0;
-        while (path[k]) { fs_names[slot][k] = path[k]; k++; }
-        fs_names[slot][k] = 0;
-        f = &ramfs[ramfs_n++];
-        f->path = fs_names[slot];
-        f->img = 0;
-    }
-    f->data = fs_text[slot];
-    fs_used[slot] = 1;
+    u32 pl = slen(path);
+    char *pc = (char *)kmalloc(pl + 1);
+    if (!pc) { kfree(buf); return 0; }
+    for (u32 i = 0; i <= pl; i++) pc[i] = path[i];
+    f = &ramfs[ramfs_n++];
+    f->path = pc;
+    f->data = buf;
+    f->img = 0;
+    f->heap = 1;
     return 1;
 }
 

@@ -53,7 +53,7 @@ jobs:
             echo "screendump /tmp/ayuda.ppm"
             sleep 1
             # Comandos con carpetas: cd docs, ls, cat lirio.txt, date
-            for k in c d spc d o c s ret  l s ret  c a t spc l i r i o dot t x t ret  d a t e ret  u p t i m e ret; do
+            for k in c d spc d o c s ret  l s ret  c a t spc l i r i o dot t x t ret  d a t e ret  u p t i m e ret  m e m ret; do
               echo "sendkey $k"; sleep 0.3
             done
             sleep 1
@@ -182,9 +182,10 @@ jobs:
             - Ratón, ventanas arrastrables, dock con clic y explorador de archivos gráfico.
             - Galería de imágenes: abre Archivos > imagenes, con miniaturas y botones Anterior / Siguiente.
             - Interrupciones: temporizador (100 Hz), teclado y ratón; doble clic en Archivos, cursor del editor parpadeante y comando `uptime`.
-            - Editor de texto: en Archivos, **Editar** un .txt o **Nuevo** para crear uno, y **Guardar** (los cambios viven en memoria hasta que haya disco).
+            - Gestión de memoria (mapa de GRUB, páginas y montón del kernel) y comando `mem`.
+            - Editor de texto: en Archivos, **Editar** un .txt o **Nuevo** para crear uno, y **Guardar** (hasta 4000 bytes por archivo, en memoria hasta que haya disco).
             - Sistema de archivos en memoria. Comandos: `ayuda`, `ls`, `cd`, `cat`, `echo`, `date`, `limpiar`, `about`, `reiniciar`, `apagar`.
 
             **Cómo probarla en VirtualBox:** máquina nueva, tipo *Other*, versión *Other/Unknown*, sin disco duro, y pon `LirioOS-kernel.iso` en la unidad óptica. Si no ves el escritorio, activa **EFI desactivado** (modo BIOS clásico).
 
-            Versión de desarrollo (kernel 0.9).
+            Versión de desarrollo (kernel 0.10).

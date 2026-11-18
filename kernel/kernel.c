@@ -395,7 +395,45 @@ static void banner(void)
     con_print(" | |   | | '__| |/ _ \\  | | | \\___ \\ \n", ATTR_PROMPT);
     con_print(" | |___| | |  | | (_) | | |_| |___) |\n", ATTR_PROMPT);
     con_print(" |_____|_|_|  |_|\\___/   \\___/|____/ \n\n", ATTR_PROMPT);
-    con_print("LirioOS kernel 0.9 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
+    con_print("LirioOS kernel 0.10 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
+}
+
+/* Escribe 'v' como 8 cifras hexadecimales */
+static void put_hex32(u32 v, u8 attr)
+{
+    con_print("0x", attr);
+    for (int i = 28; i >= 0; i -= 4) con_putc((u8)"0123456789ABCDEF"[(v >> i) & 15], attr);
+}
+
+static void put_size(u32 kib, u8 attr)         /* 1536 -> 1 MiB, 639 -> 639 KiB */
+{
+    if (kib >= 1024) { put_num(kib / 1024, attr); con_print(" MiB", attr); }
+    else             { put_num(kib, attr);        con_print(" KiB", attr); }
+}
+
+static void cmd_mem(void)
+{
+    u32 used, freeb, blocks;
+    heap_stats(&used, &freeb, &blocks);
+    con_print("Memoria (páginas de 4 KiB):\n", ATTR_SOFT);
+    con_print("  RAM utilizable  ", ATTR_NORMAL); put_size(pmm_total * 4, ATTR_NORMAL); con_putc('\n', ATTR_NORMAL);
+    con_print("  libre           ", ATTR_NORMAL); put_size(pmm_free * 4, ATTR_NORMAL);  con_putc('\n', ATTR_NORMAL);
+    con_print("  en uso          ", ATTR_NORMAL); put_size((pmm_total - pmm_free) * 4, ATTR_NORMAL); con_print("  (kernel, pantalla y montón)\n", ATTR_SOFT);
+    con_print("Montón del kernel: ", ATTR_SOFT);
+    put_size(used / 1024, ATTR_NORMAL); con_print(" en uso de ", ATTR_NORMAL);
+    put_size((used + freeb) / 1024, ATTR_NORMAL); con_print(" (", ATTR_NORMAL);
+    put_num(blocks, ATTR_NORMAL); con_print(" bloques)\n", ATTR_NORMAL);
+    con_print("Mapa de memoria de GRUB:\n", ATTR_SOFT);
+    for (u32 i = 0; i < mem_region_n; i++) {
+        con_print("  ", ATTR_NORMAL);
+        put_hex32(mem_regions[i].start, ATTR_NORMAL);
+        con_print(" - ", ATTR_NORMAL);
+        put_hex32(mem_regions[i].end, ATTR_NORMAL);
+        u32 t = mem_regions[i].type;
+        con_print(t == 1 ? "  libre      " : t == 3 ? "  ACPI       " : t == 4 ? "  ACPI NVS   " : t == 5 ? "  defectuosa " : "  reservada  ", ATTR_NORMAL);
+        put_size((mem_regions[i].end - mem_regions[i].start) / 1024 + 1, ATTR_SOFT);
+        con_putc('\n', ATTR_NORMAL);
+    }
 }
 
 /* ---------- Interrupciones y temporizador ---------- */
@@ -462,7 +500,7 @@ static void interrupts_init(void)
 
 static const char *const known_cmds[] = {
     "ayuda", "help", "ls", "cd", "pwd", "cat", "echo", "limpiar", "clear", "about", "uname",
-    "whoami", "date", "fecha", "uptime", "reiniciar", "reboot", "apagar", "halt",
+    "whoami", "date", "fecha", "uptime", "mem", "reiniciar", "reboot", "apagar", "halt",
 };
 #define KNOWN_COUNT (sizeof(known_cmds) / sizeof(known_cmds[0]))
 
@@ -521,6 +559,7 @@ static void run_command(const char *line)
         con_print("  echo [texto]    escribe un texto\n", ATTR_NORMAL);
         con_print("  date            fecha y hora del reloj de la máquina\n", ATTR_NORMAL);
         con_print("  uptime          cuánto lleva encendido el sistema\n", ATTR_NORMAL);
+        con_print("  mem             memoria: total, libre y mapa de la RAM\n", ATTR_NORMAL);
         con_print("  whoami, uname   quién eres y qué sistema es este\n", ATTR_NORMAL);
         con_print("  limpiar         borra la pantalla\n", ATTR_NORMAL);
         con_print("  reiniciar, apagar\n", ATTR_NORMAL);
@@ -580,6 +619,8 @@ static void run_command(const char *line)
         con_putc('\n', ATTR_NORMAL);
     } else if (str_eq(cmd, "date") || str_eq(cmd, "fecha")) {
         cmd_date();
+    } else if (str_eq(cmd, "mem")) {
+        cmd_mem();
     } else if (str_eq(cmd, "uptime")) {
         u32 t = ticks;
         con_print("Encendido hace ", ATTR_NORMAL);
@@ -592,11 +633,11 @@ static void run_command(const char *line)
     } else if (str_eq(cmd, "whoami")) {
         con_print("lirio\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "uname")) {
-        con_print("LirioOS 0.9 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
+        con_print("LirioOS 0.10 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "clear") || str_eq(cmd, "limpiar")) {
         con_clear();
     } else if (str_eq(cmd, "about")) {
-        con_print("LirioOS 0.9 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
+        con_print("LirioOS 0.10 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "reboot") || str_eq(cmd, "reiniciar")) {
         outb(0x64, 0xFE);
     } else if (str_eq(cmd, "halt") || str_eq(cmd, "apagar")) {
@@ -651,7 +692,10 @@ static void hist_add(const char *line)
 
 struct mb_info {
     u32 flags;
-    u8  pad[84];            /* campos que no usamos hasta el framebuffer */
+    u32 mem_lower, mem_upper;           /* memoria baja y alta, en KiB */
+    u32 pad_a[8];                       /* arranque, línea de órdenes, módulos, símbolos */
+    u32 mmap_length, mmap_addr;         /* mapa de memoria (flag 6) */
+    u32 pad_b[9];                       /* unidades, BIOS, VBE... hasta el framebuffer */
     u32 fb_addr_lo, fb_addr_hi;
     u32 fb_pitch, fb_width, fb_height;
     u8  fb_bpp, fb_type;
@@ -704,6 +748,15 @@ void kmain(u32 magic, u32 info)
     if (magic != 0x2BADB002 || !(mb->flags & (1u << 12)) || mb->fb_type != 1 || mb->fb_bpp != 32 || mb->fb_addr_hi != 0 ||
         mb->fb_width > MAX_W || mb->fb_height > MAX_H)
         text_fatal("LirioOS necesita un modo grafico de 32 bits (arranca con GRUB).");
+
+    extern char _kernel_end[];
+    mem_init((mb->flags >> 6) & 1, mb->mmap_addr, mb->mmap_length, mb->mem_upper,
+             (u32)_kernel_end, (u32)mb);
+    {   /* montón del kernel: hasta 8 MiB (o la cuarta parte de la RAM libre en máquinas pequeñas) */
+        u32 pages = pmm_free / 4 > 2048 ? 2048 : pmm_free / 4;
+        u32 base = pages ? pmm_alloc_run(pages) : 0;
+        if (base) heap_init((void *)base, pages * PAGE_SIZE);
+    }
 
     gui_set_fb((void *)mb->fb_addr_lo, mb->fb_pitch, (s32)mb->fb_width, (s32)mb->fb_height,
                mb->red_pos, mb->green_pos, mb->blue_pos);

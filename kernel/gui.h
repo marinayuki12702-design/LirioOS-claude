@@ -10,6 +10,7 @@ typedef unsigned int   u32;
 typedef signed int     s32;
 
 #include "font.h"
+#include "mem.h"
 #include "fs.h"
 
 #define NO_BG 0xFFFFFFFFu
@@ -879,31 +880,32 @@ static void ed_layout(s32 *col, s32 *line)
 static void draw_editor_body(s32 x, s32 y, s32 w, s32 h)
 {
     fill_rrect(x + 14, y + 88, w - 28, h - 102, 10, 0x1E1535, 255);
+    s32 cc, cl;
+    ed_layout(&cc, &cl);
+    s32 top = (cl >= ED_LINES) ? cl - ED_LINES + 1 : 0;         /* con mucho texto, se ve el final */
     const char *s = ed_buf;
     s32 c = 0, l = 0;
     while (*s) {
         u32 ch = next_char(&s);
         if (ch == '\n') { c = 0; l++; continue; }
         if (c >= ED_COLS) { c = 0; l++; }
-        if (l < ED_LINES) draw_glyph(x + 28 + c * 8, y + 102 + l * 18, ch, 0xF0E8FF, NO_BG, 1);
+        if (l >= top && l - top < ED_LINES) draw_glyph(x + 28 + c * 8, y + 102 + (l - top) * 18, ch, 0xF0E8FF, NO_BG, 1);
         c++;
     }
-    s32 cc, cl;
-    ed_layout(&cc, &cl);
     ed_shown = ((ticks - ed_key_tick) / 50) % 2 == 0;           /* parpadea cada medio segundo */
-    if (cl < ED_LINES && ed_shown) fill_rect(x + 28 + cc * 8, y + 102 + cl * 18, 8, 16, 0xFF9BD2, 255);
+    if (ed_shown) fill_rect(x + 28 + cc * 8, y + 102 + (cl - top) * 18, 8, 16, 0xFF9BD2, 255);
 
-    char st[48];
+    char st[72];
     u32 si = 0;
     if (exp_err) {
-        const char *m = "No hay sitio para guardar más archivos";
+        const char *m = "No se pudo guardar: no hay memoria o archivos libres";
         while (*m) st[si++] = *m++;
     } else {
         char dg[8]; int dn = 0; u32 v = ed_len;
         if (v == 0) dg[dn++] = '0';
         while (v > 0) { dg[dn++] = (char)('0' + v % 10); v /= 10; }
         while (dn > 0) st[si++] = dg[--dn];
-        const char *m = " letras - escribe con el teclado";
+        const char *m = " de 4000 bytes - escribe con el teclado";
         while (*m) st[si++] = *m++;
     }
     st[si] = 0;
@@ -1126,7 +1128,6 @@ static int gui_key(u32 c)
     } else if (c == '\n' || (c >= 32 && c < 256 && c != 127)) {
         u32 need = (c < 128) ? 1 : 2;
         if (ed_len + need > FS_TEXT_MAX) return 1;
-        u32 old = ed_len;
         if (c < 128) {
             ed_buf[ed_len++] = (char)c;
         } else {
@@ -1134,9 +1135,6 @@ static int gui_key(u32 c)
             ed_buf[ed_len++] = (char)(0x80 | (c & 0x3F));
         }
         ed_buf[ed_len] = 0;
-        s32 cc, cl;
-        ed_layout(&cc, &cl);
-        if (cl >= ED_LINES) { ed_len = old; ed_buf[ed_len] = 0; return 1; }   /* ya no cabe */
     } else {
         return 1;
     }
