@@ -156,7 +156,7 @@ static void mouse_init(void)
     kbc_wait_write();
     outb(0x64, 0x20);                    /* lee el byte de configuración */
     u8 cfg = kbc_wait_read() ? inb(0x60) : 0;
-    cfg = (u8)((cfg | 2) & ~0x20);       /* reloj del ratón activo */
+    cfg = (u8)((cfg | 3) & ~0x20);       /* interrupciones del teclado y del ratón, y reloj del ratón activo */
     kbc_wait_write();
     outb(0x64, 0x60);
     kbc_wait_write();
@@ -184,6 +184,38 @@ static int mouse_feed(u8 d, s32 *dx, s32 *dy, u8 *btn)
 }
 
 /* Atiende al teclado y al ratón; devuelve una tecla (Latin-1) o 0 si no hubo ninguna */
+/* ---------- Cola de bytes del teclado y el ratón (la llenan las interrupciones) ---------- */
+
+#define IQ_SIZE 256
+static volatile u16 iq[IQ_SIZE];          /* byte + 0x100 si viene del ratón */
+static volatile u32 iq_head, iq_tail;      /* head lo mueve quien guarda, tail quien lee */
+
+static inline void irq_off(void) { __asm__ volatile ("cli"); }
+static inline void irq_on(void)  { __asm__ volatile ("sti"); }
+
+static void iq_push(u16 v)
+{
+    u32 n = (iq_head + 1) % IQ_SIZE;
+    if (n == iq_tail) return;              /* cola llena: se pierde el byte */
+    iq[iq_head] = v;
+    iq_head = n;
+}
+
+/* IRQ 1: llegó una tecla */
+void kbd_irq(void)
+{
+    iq_push(inb(0x60));
+    outb(0x20, 0x20);
+}
+
+/* IRQ 12: llegó un byte del ratón (hay que avisar al PIC esclavo y al maestro) */
+void mouse_irq(void)
+{
+    iq_push((u16)(inb(0x60) | 0x100));
+    outb(0xA0, 0x20);
+    outb(0x20, 0x20);
+}
+
 static u32 input_poll(void)
 {
     u32 key = 0;
@@ -191,9 +223,19 @@ static u32 input_poll(void)
     int pending = 0;
     u8 s;
 
-    while (((s = inb(0x64)) & 1) && !key) {
+    /* Red de seguridad: si el controlador tiene algo que ninguna interrupción recogió, se recoge aquí */
+    irq_off();
+    while ((s = inb(0x64)) & 1) {
         u8 d = inb(0x60);
-        if (s & 0x20) {                              /* byte del ratón */
+        iq_push((u16)(d | ((s & 0x20) ? 0x100 : 0)));
+    }
+    irq_on();
+
+    while (iq_tail != iq_head && !key) {
+        u16 e = iq[iq_tail];
+        iq_tail = (iq_tail + 1) % IQ_SIZE;
+        u8 d = (u8)(e & 0xFF);
+        if (e & 0x100) {                             /* byte del ratón */
             s32 dx, dy;
             u8 btn;
             if (mouse_feed(d, &dx, &dy, &btn)) {
@@ -353,7 +395,7 @@ static void banner(void)
     con_print(" | |   | | '__| |/ _ \\  | | | \\___ \\ \n", ATTR_PROMPT);
     con_print(" | |___| | |  | | (_) | | |_| |___) |\n", ATTR_PROMPT);
     con_print(" |_____|_|_|  |_|\\___/   \\___/|____/ \n\n", ATTR_PROMPT);
-    con_print("LirioOS kernel 0.8 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
+    con_print("LirioOS kernel 0.9 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
 }
 
 /* ---------- Interrupciones y temporizador ---------- */
@@ -373,6 +415,8 @@ struct idt_ptr {
 
 extern void idt_load(const struct idt_ptr *p);
 extern void irq0_stub(void);
+extern void irq1_stub(void);
+extern void irq12_stub(void);
 
 static struct idt_entry idt[256];
 
@@ -394,22 +438,26 @@ static void interrupts_init(void)
     idt[0x20].flags = 0x8E;                         /* presente, anillo 0, puerta de interrupción de 32 bits */
     idt[0x20].off_hi = (u16)(h >> 16);
 
+    u32 h1 = (u32)irq1_stub, h12 = (u32)irq12_stub;
+    idt[0x21].off_lo = (u16)(h1 & 0xFFFF);  idt[0x21].sel = cs;  idt[0x21].flags = 0x8E;  idt[0x21].off_hi = (u16)(h1 >> 16);
+    idt[0x2C].off_lo = (u16)(h12 & 0xFFFF); idt[0x2C].sel = cs;  idt[0x2C].flags = 0x8E;  idt[0x2C].off_hi = (u16)(h12 >> 16);
+
     struct idt_ptr p = { (u16)(sizeof(idt) - 1), (u32)idt };
     idt_load(&p);
 
-    /* PIC: las IRQ 0-7 pasan a los vectores 0x20-0x27 y las 8-15 a 0x28-0x2F; solo el reloj activo */
+    /* PIC: las IRQ 0-7 pasan a los vectores 0x20-0x27 y las 8-15 a 0x28-0x2F;  */
     outb(0x20, 0x11); outb(0xA0, 0x11);
     outb(0x21, 0x20); outb(0xA1, 0x28);
     outb(0x21, 0x04); outb(0xA1, 0x02);
     outb(0x21, 0x01); outb(0xA1, 0x01);
-    outb(0x21, 0xFE); outb(0xA1, 0xFF);
+    outb(0x21, 0xF8); outb(0xA1, 0xEF);        /* activos: reloj (0), teclado (1), cascada (2) y ratón (12) */
 
     /* PIT (canal 0): 1193182 Hz / 11932 = 100 interrupciones por segundo */
     outb(0x43, 0x36);
     outb(0x40, (u8)(11932 & 0xFF));
     outb(0x40, (u8)(11932 >> 8));
 
-    __asm__ volatile ("sti");
+    irq_on();
 }
 
 static const char *const known_cmds[] = {
@@ -544,11 +592,11 @@ static void run_command(const char *line)
     } else if (str_eq(cmd, "whoami")) {
         con_print("lirio\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "uname")) {
-        con_print("LirioOS 0.8 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
+        con_print("LirioOS 0.9 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "clear") || str_eq(cmd, "limpiar")) {
         con_clear();
     } else if (str_eq(cmd, "about")) {
-        con_print("LirioOS 0.8 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
+        con_print("LirioOS 0.9 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "reboot") || str_eq(cmd, "reiniciar")) {
         outb(0x64, 0xFE);
     } else if (str_eq(cmd, "halt") || str_eq(cmd, "apagar")) {
@@ -676,6 +724,7 @@ void kmain(u32 magic, u32 info)
         for (;;) {
             u32 c = input_poll();
             if (!c) {
+                gui_tick();
                 __asm__ volatile ("hlt");              /* duerme hasta la siguiente interrupción (10 ms como mucho) */
                 continue;
             }

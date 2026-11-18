@@ -55,4 +55,23 @@ irq0_stub:
     popad
     iret
 
+; Interrupción 1 = teclado y interrupción 12 = ratón: guardan el byte recibido en una cola
+global irq1_stub
+extern kbd_irq
+irq1_stub:
+    pushad
+    cld
+    call kbd_irq
+    popad
+    iret
+
+global irq12_stub
+extern mouse_irq
+irq12_stub:
+    pushad
+    cld
+    call mouse_irq
+    popad
+    iret
+
 section .note.GNU-stack noalloc noexec nowrite progbits

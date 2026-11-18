@@ -113,7 +113,6 @@ jobs:
             echo "mouse_move 168 0"; sleep 0.5                                   # botón Nuevo
             echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 1
             for k in h o l a spc semicolon a n d apostrophe u; do echo "sendkey $k"; sleep 0.3; done
-            sleep 1
             echo "screendump /tmp/editor.ppm"
             sleep 1
             echo "mouse_move -168 0"; sleep 0.5                                  # botón Guardar
@@ -182,10 +181,10 @@ jobs:
             - Teclado en español (ñ, tildes, AltGr).
             - Ratón, ventanas arrastrables, dock con clic y explorador de archivos gráfico.
             - Galería de imágenes: abre Archivos > imagenes, con miniaturas y botones Anterior / Siguiente.
-            - Interrupciones y temporizador (100 Hz): doble clic en Archivos y comando `uptime`.
+            - Interrupciones: temporizador (100 Hz), teclado y ratón; doble clic en Archivos, cursor del editor parpadeante y comando `uptime`.
             - Editor de texto: en Archivos, **Editar** un .txt o **Nuevo** para crear uno, y **Guardar** (los cambios viven en memoria hasta que haya disco).
             - Sistema de archivos en memoria. Comandos: `ayuda`, `ls`, `cd`, `cat`, `echo`, `date`, `limpiar`, `about`, `reiniciar`, `apagar`.
 
             **Cómo probarla en VirtualBox:** máquina nueva, tipo *Other*, versión *Other/Unknown*, sin disco duro, y pon `LirioOS-kernel.iso` en la unidad óptica. Si no ves el escritorio, activa **EFI desactivado** (modo BIOS clásico).
 
-            Versión de desarrollo (kernel 0.8).
+            Versión de desarrollo (kernel 0.9).

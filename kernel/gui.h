@@ -661,6 +661,8 @@ static char exp_file[PATH_MAX];     /* archivo abierto en el visor ("" = ninguno
 static int  exp_hover = -1;         /* elemento o botón bajo el ratón */
 static int  exp_sel = -1;           /* elemento seleccionado (a falta del segundo clic) */
 static u32  exp_click;              /* tic del último clic sobre un elemento */
+static u32  ed_key_tick;            /* tic de la última tecla (el cursor parpadea desde ahí) */
+static int  ed_shown = 1;           /* ¿se dibujó el cursor del editor la última vez? */
 static int  exp_editing;            /* 1 = se está editando exp_file */
 static int  exp_err;                /* 1 = el último "Guardar" falló */
 static char ed_buf[FS_TEXT_MAX + 1];    /* texto en edición (UTF-8) */
@@ -785,14 +787,14 @@ static void explorer_click(int t)
         u32 k = 0;
         while (path[k]) { exp_file[k] = path[k]; k++; }
         exp_file[k] = 0;
-        ed_len = 0; ed_buf[0] = 0; exp_editing = 1; exp_err = 0;
+        ed_len = 0; ed_buf[0] = 0; exp_editing = 1; exp_err = 0; ed_key_tick = ticks;
     } else if (t == EXP_EDIT) {
         const struct ramfs_file *f = fs_file(exp_file);
         ed_len = 0;
         if (f && f->data)
             while (f->data[ed_len] && ed_len < FS_TEXT_MAX) { ed_buf[ed_len] = f->data[ed_len]; ed_len++; }
         ed_buf[ed_len] = 0;
-        exp_editing = 1; exp_err = 0;
+        exp_editing = 1; exp_err = 0; ed_key_tick = ticks;
     } else if (t == EXP_SAVE) {
         if (fs_write(exp_file, ed_buf)) exp_editing = 0;
         else exp_err = 1;
@@ -888,7 +890,8 @@ static void draw_editor_body(s32 x, s32 y, s32 w, s32 h)
     }
     s32 cc, cl;
     ed_layout(&cc, &cl);
-    if (cl < ED_LINES) fill_rect(x + 28 + cc * 8, y + 102 + cl * 18, 8, 16, 0xFF9BD2, 255);
+    ed_shown = ((ticks - ed_key_tick) / 50) % 2 == 0;           /* parpadea cada medio segundo */
+    if (cl < ED_LINES && ed_shown) fill_rect(x + 28 + cc * 8, y + 102 + cl * 18, 8, 16, 0xFF9BD2, 255);
 
     char st[48];
     u32 si = 0;
@@ -1138,9 +1141,21 @@ static int gui_key(u32 c)
         return 1;
     }
     exp_err = 0;
+    ed_key_tick = ticks;
     compose();
     present();
     return 1;
+}
+
+/* Se llama cuando no hay nada que hacer: hace parpadear el cursor del editor */
+static void gui_tick(void)
+{
+    if (!(app_vis && app_top && app_kind == 1 && exp_editing)) return;
+    int on = ((ticks - ed_key_tick) / 50) % 2 == 0;
+    if (on != ed_shown) {
+        compose();                                      /* al dibujar, ed_shown se actualiza */
+        present();
+    }
 }
 
 static void open_app(int kind)

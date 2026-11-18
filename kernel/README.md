@@ -27,7 +27,7 @@ Kernel propio, escrito en C y ensamblador para x86 de 32 bits. Arranca con GRUB 
 - **Explorador de archivos** gráfico (dock → Archivos, o el icono Inicio del escritorio): carpetas y archivos como iconos, botones Subir, Inicio y Volver, barra con la ruta, resalte al pasar el ratón y visor de texto en la misma ventana. Se abre con **doble clic** (un clic selecciona); los botones, con un clic.
 - **Galería de imágenes** (Archivos → `imagenes`): miniaturas en la cuadrícula, visor con la imagen ajustada a la ventana y botones **Anterior** y **Siguiente**. Las imágenes de ejemplo (un lirio, olas con sol y un cielo de destellos) están dibujadas con código por `tools/gen_images.py` y se guardan con paleta de 256 colores.
 - **Editor de texto** dentro de Archivos: **Editar** abre un `.txt`, **Nuevo** crea `nuevo.txt` (o `nuevo2.txt`…), con teclado español (ñ, tildes), Retorno y Borrar; **Guardar** escribe el archivo y **Cancelar** lo descarta. Hasta ahora los archivos eran de solo lectura: ahora hay 8 huecos de memoria de hasta 900 bytes, que **se pierden al apagar** (el disco llegará más adelante). El cursor está siempre al final del texto: aún no hay flechas izquierda/derecha.
-- **Interrupciones y temporizador**: el kernel configura la tabla de interrupciones (IDT), reprograma el PIC y pone el reloj PIT a 100 Hz. Eso da el doble clic, el comando `uptime` y que el kernel duerma (`hlt`) en vez de consumir CPU esperando. El teclado y el ratón siguen consultándose por sondeo; pasarlos a interrupciones es el siguiente paso.
+- **Interrupciones**: el kernel configura la tabla de interrupciones (IDT), reprograma el PIC y atiende tres: el **reloj** (PIT a 100 Hz), el **teclado** (IRQ 1) y el **ratón** (IRQ 12). Los dos últimos guardan cada byte en una cola de 256 entradas, así no se pierde ningún movimiento aunque el kernel esté dibujando; el bucle principal los procesa y, si no hay nada que hacer, duerme (`hlt`) hasta la siguiente interrupción. Se mantiene además una lectura de seguridad por sondeo, por si alguna máquina virtual no entrega una interrupción. El reloj da el doble clic, el comando `uptime` y el cursor parpadeante del editor.
 - Teclado **en español**: ñ, Ñ, ç, ¿ ¡, tildes y diéresis con las teclas muertas, Shift, Bloq Mayús, AltGr (`@ # | ~ { } [ ] \`) y flechas arriba/abajo para repetir comandos.
 - Sistema de archivos **en memoria** (ramfs) con carpetas y archivos escribibles: `bienvenida.txt`, `docs/`, `notas/` e `imagenes/`.
 - Terminal con `ayuda`, `ls [carpeta]`, `cd <carpeta>` (`..` y `/` también), `pwd`, `cat <archivo>`, `echo`, `date` (reloj de la máquina), `uptime`, `whoami`, `uname`, `limpiar`, `reiniciar` y `apagar`. Si te equivocas de comando, sugiere el correcto; los comandos de Linux (`sudo`, `apt`…) explican que LirioOS no es Linux.
@@ -58,8 +58,7 @@ Para probarlo en VirtualBox: máquina nueva "Other/Unknown", sin disco, con esa 
 ## Hoja de ruta
 
 1. Más aplicaciones reales (el explorador, el visor de imágenes y el editor ya existen): reproductor, ajustes.
-2. Teclado y ratón por interrupciones (el temporizador ya funciona) en lugar de consultar en bucle.
-3. Memoria: mapa de memoria de Multiboot y un asignador sencillo.
-4. Disco (ATA) y lectura de FAT32; después crear y borrar archivos.
-5. Procesos y modo usuario.
-6. Más adelante, y mucho más grande: red, audio, USB (cámara), un navegador y compatibilidad con programas de Linux.
+2. Memoria: mapa de memoria de Multiboot y un asignador sencillo.
+3. Disco (ATA) y lectura de FAT32; después crear y borrar archivos.
+4. Procesos y modo usuario.
+5. Más adelante, y mucho más grande: red, audio, USB (cámara), un navegador y compatibilidad con programas de Linux.
