@@ -144,6 +144,10 @@ static const char *const cursor_sprite[CUR_H] = {
 
 static s32 mouse_x, mouse_y;
 
+/* Tics del temporizador (100 por segundo): los suma la interrupción del reloj, ver kernel.c */
+static volatile u32 ticks;
+#define DBL_TICKS 60            /* dos clics con menos de 0,6 s entre ellos = doble clic */
+
 /* Copia una zona de la memoria intermedia a la pantalla con el cursor ya mezclado, de modo que cada
  * píxel se escribe una sola vez con su valor final (así el cursor no desaparece ni parpadea). */
 static void present_rect(s32 x, s32 y, s32 w, s32 h)
@@ -655,6 +659,8 @@ static void draw_term(void)
 static char exp_dir[PATH_MAX];      /* carpeta que se está viendo ("" = raíz) */
 static char exp_file[PATH_MAX];     /* archivo abierto en el visor ("" = ninguno) */
 static int  exp_hover = -1;         /* elemento o botón bajo el ratón */
+static int  exp_sel = -1;           /* elemento seleccionado (a falta del segundo clic) */
+static u32  exp_click;              /* tic del último clic sobre un elemento */
 static int  exp_editing;            /* 1 = se está editando exp_file */
 static int  exp_err;                /* 1 = el último "Guardar" falló */
 static char ed_buf[FS_TEXT_MAX + 1];    /* texto en edición (UTF-8) */
@@ -754,6 +760,7 @@ static void explorer_click(int t)
     char name[48], path[PATH_MAX];
     int is_dir;
 
+    if (t != exp_sel) exp_sel = -1;
     if (t == EXP_UP) {
         fs_parent(exp_dir);
     } else if (t == EXP_HOME) {
@@ -793,11 +800,17 @@ static void explorer_click(int t)
         exp_editing = 0;
         if (!fs_file(exp_file)) exp_file[0] = 0;      /* un archivo nuevo sin guardar no existe */
     } else if (t >= 0 && fs_entry(exp_dir, (u32)t, name, &is_dir)) {
-        fs_join(exp_dir, name, path);
-        char *dst = is_dir ? exp_dir : exp_file;
-        u32 k = 0;
-        while (path[k]) { dst[k] = path[k]; k++; }
-        dst[k] = 0;
+        int dbl = (t == exp_sel) && (u32)(ticks - exp_click) < DBL_TICKS;
+        exp_sel = t;
+        exp_click = ticks;
+        if (dbl) {                                    /* doble clic: abrir */
+            exp_sel = -1;
+            fs_join(exp_dir, name, path);
+            char *dst = is_dir ? exp_dir : exp_file;
+            u32 k = 0;
+            while (path[k]) { dst[k] = path[k]; k++; }
+            dst[k] = 0;
+        }
     }
     exp_hover = -1;
 }
@@ -963,6 +976,7 @@ static void draw_explorer(void)
     for (int i = 0; i < EXP_MAX && fs_entry(exp_dir, (u32)i, name, &is_dir); i++) {
         s32 cx, cy;
         exp_cell(i, &cx, &cy);
+        if (exp_sel == i) fill_rrect(cx + 4, cy + 4, EXP_CW - 8, EXP_CH - 8, 12, 0xB9A2F5, 90);
         if (exp_hover == i) fill_rrect(cx + 4, cy + 4, EXP_CW - 8, EXP_CH - 8, 12, 0xFFFFFF, 45);
         const struct ramfs_file *tf = 0;
         if (!is_dir) {
@@ -1140,6 +1154,7 @@ static void open_app(int kind)
         exp_file[0] = 0;
         exp_hover = -1;
         exp_editing = 0;
+        exp_sel = -1;
     }
     win_default(1);
     win_raise(1);

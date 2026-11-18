@@ -38,4 +38,21 @@ _start:
     hlt
     jmp .hang
 
+; Carga la tabla de interrupciones (IDT) que prepara el kernel en C
+global idt_load
+idt_load:
+    mov eax, [esp + 4]
+    lidt [eax]
+    ret
+
+; Interrupción 0 del PIC = temporizador: guarda los registros, avisa al kernel y vuelve
+global irq0_stub
+extern timer_irq
+irq0_stub:
+    pushad
+    cld
+    call timer_irq
+    popad
+    iret
+
 section .note.GNU-stack noalloc noexec nowrite progbits

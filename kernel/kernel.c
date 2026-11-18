@@ -353,12 +353,68 @@ static void banner(void)
     con_print(" | |   | | '__| |/ _ \\  | | | \\___ \\ \n", ATTR_PROMPT);
     con_print(" | |___| | |  | | (_) | | |_| |___) |\n", ATTR_PROMPT);
     con_print(" |_____|_|_|  |_|\\___/   \\___/|____/ \n\n", ATTR_PROMPT);
-    con_print("LirioOS kernel 0.7 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
+    con_print("LirioOS kernel 0.8 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
+}
+
+/* ---------- Interrupciones y temporizador ---------- */
+
+struct idt_entry {
+    u16 off_lo;
+    u16 sel;
+    u8  zero;
+    u8  flags;
+    u16 off_hi;
+} __attribute__((packed));
+
+struct idt_ptr {
+    u16 limit;
+    u32 base;
+} __attribute__((packed));
+
+extern void idt_load(const struct idt_ptr *p);
+extern void irq0_stub(void);
+
+static struct idt_entry idt[256];
+
+/* La llama irq0_stub (boot.asm) 100 veces por segundo */
+void timer_irq(void)
+{
+    ticks++;
+    outb(0x20, 0x20);                               /* fin de interrupción para el PIC */
+}
+
+static void interrupts_init(void)
+{
+    u16 cs;
+    __asm__ volatile ("mov %%cs, %0" : "=r"(cs));
+    u32 h = (u32)irq0_stub;
+    idt[0x20].off_lo = (u16)(h & 0xFFFF);
+    idt[0x20].sel = cs;
+    idt[0x20].zero = 0;
+    idt[0x20].flags = 0x8E;                         /* presente, anillo 0, puerta de interrupción de 32 bits */
+    idt[0x20].off_hi = (u16)(h >> 16);
+
+    struct idt_ptr p = { (u16)(sizeof(idt) - 1), (u32)idt };
+    idt_load(&p);
+
+    /* PIC: las IRQ 0-7 pasan a los vectores 0x20-0x27 y las 8-15 a 0x28-0x2F; solo el reloj activo */
+    outb(0x20, 0x11); outb(0xA0, 0x11);
+    outb(0x21, 0x20); outb(0xA1, 0x28);
+    outb(0x21, 0x04); outb(0xA1, 0x02);
+    outb(0x21, 0x01); outb(0xA1, 0x01);
+    outb(0x21, 0xFE); outb(0xA1, 0xFF);
+
+    /* PIT (canal 0): 1193182 Hz / 11932 = 100 interrupciones por segundo */
+    outb(0x43, 0x36);
+    outb(0x40, (u8)(11932 & 0xFF));
+    outb(0x40, (u8)(11932 >> 8));
+
+    __asm__ volatile ("sti");
 }
 
 static const char *const known_cmds[] = {
     "ayuda", "help", "ls", "cd", "pwd", "cat", "echo", "limpiar", "clear", "about", "uname",
-    "whoami", "date", "fecha", "reiniciar", "reboot", "apagar", "halt",
+    "whoami", "date", "fecha", "uptime", "reiniciar", "reboot", "apagar", "halt",
 };
 #define KNOWN_COUNT (sizeof(known_cmds) / sizeof(known_cmds[0]))
 
@@ -416,6 +472,7 @@ static void run_command(const char *line)
         con_print("  cat <archivo>   muestra el contenido de un archivo\n", ATTR_NORMAL);
         con_print("  echo [texto]    escribe un texto\n", ATTR_NORMAL);
         con_print("  date            fecha y hora del reloj de la máquina\n", ATTR_NORMAL);
+        con_print("  uptime          cuánto lleva encendido el sistema\n", ATTR_NORMAL);
         con_print("  whoami, uname   quién eres y qué sistema es este\n", ATTR_NORMAL);
         con_print("  limpiar         borra la pantalla\n", ATTR_NORMAL);
         con_print("  reiniciar, apagar\n", ATTR_NORMAL);
@@ -475,14 +532,23 @@ static void run_command(const char *line)
         con_putc('\n', ATTR_NORMAL);
     } else if (str_eq(cmd, "date") || str_eq(cmd, "fecha")) {
         cmd_date();
+    } else if (str_eq(cmd, "uptime")) {
+        u32 t = ticks;
+        con_print("Encendido hace ", ATTR_NORMAL);
+        put_num(t / 6000, ATTR_NORMAL);
+        con_print(" min ", ATTR_NORMAL);
+        put_num((t / 100) % 60, ATTR_NORMAL);
+        con_print(" s (", ATTR_NORMAL);
+        put_num(t, ATTR_NORMAL);
+        con_print(" tics del temporizador)\n", ATTR_SOFT);
     } else if (str_eq(cmd, "whoami")) {
         con_print("lirio\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "uname")) {
-        con_print("LirioOS 0.7 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
+        con_print("LirioOS 0.8 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "clear") || str_eq(cmd, "limpiar")) {
         con_clear();
     } else if (str_eq(cmd, "about")) {
-        con_print("LirioOS 0.7 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
+        con_print("LirioOS 0.8 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "reboot") || str_eq(cmd, "reiniciar")) {
         outb(0x64, 0xFE);
     } else if (str_eq(cmd, "halt") || str_eq(cmd, "apagar")) {
@@ -598,6 +664,7 @@ void kmain(u32 magic, u32 info)
     mouse_init();
     banner();
     print_video_info(mb);
+    interrupts_init();
 
     for (;;) {
         u32 hpos = hist_n;
@@ -609,7 +676,7 @@ void kmain(u32 magic, u32 info)
         for (;;) {
             u32 c = input_poll();
             if (!c) {
-                __asm__ volatile ("pause");
+                __asm__ volatile ("hlt");              /* duerme hasta la siguiente interrupción (10 ms como mucho) */
                 continue;
             }
             if (gui_key(c)) continue;                 /* con el editor abierto, las teclas son para él */

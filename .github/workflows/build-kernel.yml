@@ -43,6 +43,8 @@ jobs:
         working-directory: kernel
         run: |
           (
+            # doble clic: dos pulsaciones seguidas (el explorador pide menos de 0,6 s entre ellas)
+            dbl() { echo "mouse_button 1"; sleep 0.1; echo "mouse_button 0"; sleep 0.1; echo "mouse_button 1"; sleep 0.1; echo "mouse_button 0"; sleep 1; }
             sleep 12
             echo "screendump /tmp/arranque.ppm"
             sleep 1
@@ -51,7 +53,7 @@ jobs:
             echo "screendump /tmp/ayuda.ppm"
             sleep 1
             # Comandos con carpetas: cd docs, ls, cat lirio.txt, date
-            for k in c d spc d o c s ret  l s ret  c a t spc l i r i o dot t x t ret  d a t e ret; do
+            for k in c d spc d o c s ret  l s ret  c a t spc l i r i o dot t x t ret  d a t e ret  u p t i m e ret; do
               echo "sendkey $k"; sleep 0.3
             done
             sleep 1
@@ -80,12 +82,10 @@ jobs:
             # Explorador: sube al primer elemento (la carpeta docs), entra y abre el primer archivo
             for i in 1 2 3 4 5 6; do echo "mouse_move -16 -80"; sleep 0.4; done
             sleep 1
-            echo "mouse_button 1"; sleep 0.5
-            echo "mouse_button 0"; sleep 1
+            dbl
             echo "screendump /tmp/explorador.ppm"
             sleep 1
-            echo "mouse_button 1"; sleep 0.5
-            echo "mouse_button 0"; sleep 1
+            dbl
             echo "screendump /tmp/visor.ppm"
             sleep 1
             # Galería: lleva el cursor a la esquina (0,0) y desde ahí a cada botón
@@ -95,11 +95,11 @@ jobs:
             echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 0.8   # Volver
             echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 0.8   # Subir a la raíz
             echo "mouse_move 124 78"; sleep 0.5                                  # carpeta imagenes
-            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 1
+            dbl
             echo "screendump /tmp/galeria.ppm"
             sleep 1
             echo "mouse_move -108 0"; sleep 0.5                                  # primera imagen
-            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 1
+            dbl
             echo "screendump /tmp/imagen.ppm"
             sleep 1
             echo "mouse_move 154 -78"; sleep 0.5                                 # botón Siguiente
@@ -182,9 +182,10 @@ jobs:
             - Teclado en español (ñ, tildes, AltGr).
             - Ratón, ventanas arrastrables, dock con clic y explorador de archivos gráfico.
             - Galería de imágenes: abre Archivos > imagenes, con miniaturas y botones Anterior / Siguiente.
+            - Interrupciones y temporizador (100 Hz): doble clic en Archivos y comando `uptime`.
             - Editor de texto: en Archivos, **Editar** un .txt o **Nuevo** para crear uno, y **Guardar** (los cambios viven en memoria hasta que haya disco).
             - Sistema de archivos en memoria. Comandos: `ayuda`, `ls`, `cd`, `cat`, `echo`, `date`, `limpiar`, `about`, `reiniciar`, `apagar`.
 
             **Cómo probarla en VirtualBox:** máquina nueva, tipo *Other*, versión *Other/Unknown*, sin disco duro, y pon `LirioOS-kernel.iso` en la unidad óptica. Si no ves el escritorio, activa **EFI desactivado** (modo BIOS clásico).
 
-            Versión de desarrollo (kernel 0.7).
+            Versión de desarrollo (kernel 0.8).
