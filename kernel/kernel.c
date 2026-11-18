@@ -421,7 +421,7 @@ static void cmd_mem(void)
     con_print("  en uso          ", ATTR_NORMAL); put_size((pmm_total - pmm_free) * 4, ATTR_NORMAL); con_print("  (kernel, pantalla y montón)\n", ATTR_SOFT);
     con_print("Montón del kernel: ", ATTR_SOFT);
     put_size(used / 1024, ATTR_NORMAL); con_print(" en uso de ", ATTR_NORMAL);
-    put_size((used + freeb) / 1024, ATTR_NORMAL); con_print(" (", ATTR_NORMAL);
+    put_size(heap_size / 1024, ATTR_NORMAL); con_print(" (", ATTR_NORMAL);
     put_num(blocks, ATTR_NORMAL); con_print(" bloques)\n", ATTR_NORMAL);
     con_print("Mapa de memoria de GRUB:\n", ATTR_SOFT);
     for (u32 i = 0; i < mem_region_n; i++) {
