@@ -152,7 +152,7 @@ jobs:
             echo "screendump /tmp/disco_gui.ppm"
             sleep 1
             echo "quit"
-          ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -hda disco.img -m 256 -vga std -display none -monitor stdio -no-reboot
+          ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -boot d -hda disco.img -m 256 -vga std -display none -monitor stdio -no-reboot
           mkdir -p ../capturas
           convert /tmp/arranque.ppm ../capturas/arranque.png
           convert /tmp/ayuda.ppm ../capturas/ayuda.png
@@ -199,7 +199,7 @@ jobs:
             echo "screendump /tmp/formato.ppm"
             sleep 1
             echo "quit"
-          ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -hda blanco.img -m 256 -vga std -display none -monitor stdio -no-reboot
+          ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -boot d -hda blanco.img -m 256 -vga std -display none -monitor stdio -no-reboot
           convert /tmp/formato.ppm ../capturas/formato.png
           echo "--- fsck.vfat sobre el disco formateado por LirioOS ---"
           fsck.vfat -n blanco.img
