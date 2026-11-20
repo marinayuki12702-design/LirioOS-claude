@@ -31,13 +31,27 @@ jobs:
       - name: Instalar herramientas
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm gcc-multilib grub-pc-bin xorriso mtools qemu-system-x86 imagemagick
+          sudo apt-get install -y nasm gcc-multilib grub-pc-bin xorriso mtools dosfstools qemu-system-x86 imagemagick
 
       - name: Compilar kernel y ISO
         working-directory: kernel
         run: |
           make
           make iso
+
+      - name: Preparar un disco FAT32 de prueba (hecho con Linux)
+        working-directory: kernel
+        run: |
+          truncate -s 64M disco.img
+          mkfs.vfat -F 32 -s 1 -n PRUEBA disco.img
+          echo "Hola, este archivo lo puse desde un PC con Linux." > hola.txt
+          echo "Un documento con nombre largo." > "documento con nombre largo.txt"
+          mcopy -i disco.img hola.txt ::HOLA.TXT
+          mcopy -i disco.img "documento con nombre largo.txt" ::
+          mmd -i disco.img ::FOTOS
+          echo "dentro de una carpeta" > dentro.txt
+          mcopy -i disco.img dentro.txt ::FOTOS/DENTRO.TXT
+          mdir -i disco.img ::
 
       - name: Arrancar en QEMU y sacar capturas de pantalla
         working-directory: kernel
@@ -58,6 +72,13 @@ jobs:
             done
             sleep 1
             echo "screendump /tmp/comandos.ppm"
+            sleep 1
+            # Disco: cd .. , cd disco, ls, cat hola.txt, disco
+            for k in c d spc dot dot ret  c d spc d i s c o ret  l s ret  c a t spc h o l a dot t x t ret  d i s c o ret; do
+              echo "sendkey $k"; sleep 0.3
+            done
+            sleep 1
+            echo "screendump /tmp/disco.ppm"
             sleep 1
             # Teclado español: echo hola ñandú ¿qué?
             for k in e c h o spc h o l a spc semicolon a n d apostrophe u spc shift-equal q u apostrophe e shift-minus ret; do
@@ -119,8 +140,19 @@ jobs:
             echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 1
             echo "screendump /tmp/guardado.ppm"
             sleep 1
+            # Guardar en el disco: Volver, entrar en la carpeta disco (4.ª), Nuevo, escribir y Guardar
+            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 0.8   # Volver
+            echo "mouse_move 340 78"; sleep 0.5                                  # carpeta disco
+            dbl
+            echo "mouse_move -172 -78"; sleep 0.5                                # botón Nuevo
+            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 1
+            for k in d i s c o spc o k; do echo "sendkey $k"; sleep 0.3; done
+            echo "mouse_move -168 0"; sleep 0.5                                  # botón Guardar
+            echo "mouse_button 1"; sleep 0.4; echo "mouse_button 0"; sleep 1
+            echo "screendump /tmp/disco_gui.ppm"
+            sleep 1
             echo "quit"
-          ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -m 256 -vga std -display none -monitor stdio -no-reboot
+          ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -hda disco.img -m 256 -vga std -display none -monitor stdio -no-reboot
           mkdir -p ../capturas
           convert /tmp/arranque.ppm ../capturas/arranque.png
           convert /tmp/ayuda.ppm ../capturas/ayuda.png
@@ -134,6 +166,43 @@ jobs:
           convert /tmp/imagen2.ppm ../capturas/imagen2.png
           convert /tmp/editor.ppm ../capturas/editor.png
           convert /tmp/guardado.ppm ../capturas/guardado.png
+          convert /tmp/disco.ppm ../capturas/disco.png
+          convert /tmp/disco_gui.ppm ../capturas/disco_gui.png
+
+      - name: Comprobar el disco con las herramientas de Linux
+        working-directory: kernel
+        run: |
+          echo "--- fsck.vfat ---"
+          fsck.vfat -n disco.img
+          echo "--- contenido ---"
+          mdir -i disco.img ::
+          echo "--- archivo creado desde LirioOS ---"
+          mtype -i disco.img ::NUEVO.TXT | tee /tmp/nuevo.txt
+          grep -q "disco ok" /tmp/nuevo.txt
+          python3 ../tools/check_fat32.py disco.img -t
+
+      - name: Formatear un disco en blanco desde LirioOS
+        working-directory: kernel
+        run: |
+          truncate -s 64M blanco.img
+          (
+            sleep 12
+            for k in d i s c o ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 1
+            for k in f o r m a t e a r spc s i ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 8
+            for k in d i s c o ret; do echo "sendkey $k"; sleep 0.3; done
+            for k in c d spc d i s c o ret; do echo "sendkey $k"; sleep 0.3; done
+            for k in e c h o spc h o l a ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 1
+            echo "screendump /tmp/formato.ppm"
+            sleep 1
+            echo "quit"
+          ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -hda blanco.img -m 256 -vga std -display none -monitor stdio -no-reboot
+          convert /tmp/formato.ppm ../capturas/formato.png
+          echo "--- fsck.vfat sobre el disco formateado por LirioOS ---"
+          fsck.vfat -n blanco.img
+          python3 ../tools/check_fat32.py blanco.img -t
 
       - name: Guardar las capturas en el repositorio
         if: github.ref == 'refs/heads/main'
@@ -182,10 +251,11 @@ jobs:
             - Ratón, ventanas arrastrables, dock con clic y explorador de archivos gráfico.
             - Galería de imágenes: abre Archivos > imagenes, con miniaturas y botones Anterior / Siguiente.
             - Interrupciones: temporizador (100 Hz), teclado y ratón; doble clic en Archivos, cursor del editor parpadeante y comando `uptime`.
+            - Disco duro ATA y FAT32: carpeta `disco` en Archivos y en el terminal, comandos `disco`, `formatear si`, `mkdir` y `rm`.
             - Gestión de memoria (mapa de GRUB, páginas y montón del kernel) y comando `mem`.
             - Editor de texto: en Archivos, **Editar** un .txt o **Nuevo** para crear uno, y **Guardar** (hasta 4000 bytes por archivo, en memoria hasta que haya disco).
             - Sistema de archivos en memoria. Comandos: `ayuda`, `ls`, `cd`, `cat`, `echo`, `date`, `limpiar`, `about`, `reiniciar`, `apagar`.
 
             **Cómo probarla en VirtualBox:** máquina nueva, tipo *Other*, versión *Other/Unknown*, sin disco duro, y pon `LirioOS-kernel.iso` en la unidad óptica. Si no ves el escritorio, activa **EFI desactivado** (modo BIOS clásico).
 
-            Versión de desarrollo (kernel 0.10).
+            Versión de desarrollo (kernel 0.11).

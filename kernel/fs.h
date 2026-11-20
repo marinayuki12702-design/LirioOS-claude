@@ -21,6 +21,16 @@ static u32 slen(const char *s)
     return n;
 }
 
+#include "fat.h"
+
+/* Carpeta "disco": lo que hay en el disco duro, si tiene un volumen FAT32 montado */
+static int is_disk(const char *p)
+{
+    return p[0] == 'd' && p[1] == 'i' && p[2] == 's' && p[3] == 'c' && p[4] == 'o' && (p[5] == 0 || p[5] == '/');
+}
+
+static const char *disk_rel(const char *p) { return p[5] == '/' ? p + 6 : p + 5; }
+
 struct ramfs_file {
     const char *path;      /* sin barra inicial: "docs/lirio.txt" */
     const char *data;      /* texto UTF-8 (0 si es una imagen) */
@@ -77,6 +87,7 @@ static int in_dir(const char *file, const char *dir)
 
 static int fs_is_dir(const char *path)
 {
+    if (is_disk(path)) return fat_ready && fat_is_dir(disk_rel(path));
     fs_init();
     if (path[0] == 0) return 1;
     for (u32 i = 0; i < RAMFS_COUNT; i++)
@@ -84,8 +95,50 @@ static int fs_is_dir(const char *path)
     return 0;
 }
 
+/* Copia del último archivo leído del disco: así no se vuelve a leer en cada repintado */
+static struct ramfs_file disk_file;
+static char *disk_buf;
+static char disk_cache_path[PATH_MAX];
+static int  disk_cache_ok;
+static int  disk_big;                      /* el archivo es más grande de lo que se carga (no se puede editar) */
+
+static void disk_forget(void)
+{
+    disk_cache_ok = 0;
+    fat_forget();
+}
+
 static const struct ramfs_file *fs_file(const char *path)
 {
+    if (is_disk(path)) {
+        if (!fat_ready) return 0;
+        if (disk_cache_ok && str_eq(disk_cache_path, path)) return &disk_file;
+        u8 *buf = (u8 *)kmalloc(FS_TEXT_MAX + 1);
+        u32 len = 0;
+        if (!buf) return 0;
+        if (!fat_read_file(disk_rel(path), buf, FS_TEXT_MAX, &len)) { kfree(buf); return 0; }
+        buf[len] = 0;
+        disk_big = 0;
+        {   /* ¿era más grande? */
+            char dir[PATH_MAX], leaf[16];
+            u32 dc, lba, off;
+            u8 name[11], e[32];
+            if (fat_split(disk_rel(path), dir, leaf) && fat_walk(dir, &dc) && fat_make83(leaf, name) &&
+                fat_find(dc, name, e, &lba, &off) && rd32(e + 28) > FS_TEXT_MAX)
+                disk_big = 1;
+        }
+        if (disk_buf) kfree(disk_buf);
+        disk_buf = (char *)buf;
+        u32 k = 0;
+        while (path[k] && k < PATH_MAX - 1) { disk_cache_path[k] = path[k]; k++; }
+        disk_cache_path[k] = 0;
+        disk_file.path = disk_cache_path;
+        disk_file.data = disk_buf;
+        disk_file.img = 0;
+        disk_file.heap = 0;
+        disk_cache_ok = 1;
+        return &disk_file;
+    }
     fs_init();
     for (u32 i = 0; i < RAMFS_COUNT; i++)
         if (str_eq(ramfs[i].path, path)) return &ramfs[i];
@@ -98,6 +151,11 @@ static int fs_write(const char *path, const char *text)
     fs_init();
     u32 n = slen(text);
     if (n > FS_TEXT_MAX || slen(path) >= PATH_MAX) return 0;
+    if (is_disk(path)) {
+        int ok = fat_ready && fat_write_file(disk_rel(path), (const u8 *)text, n);
+        disk_forget();
+        return ok;
+    }
     struct ramfs_file *f = 0;
     for (u32 i = 0; i < ramfs_n; i++)
         if (str_eq(ramfs[i].path, path)) f = &ramfs[i];
@@ -128,7 +186,7 @@ static int fs_write(const char *path, const char *text)
 
 /* Entrada número 'idx' de una carpeta: primero las carpetas y luego los archivos, en el orden
  * en que se declararon. Devuelve 1 y rellena 'name' (hasta 47 caracteres) e 'is_dir'; 0 si no hay tantas. */
-static int fs_entry(const char *dir, u32 idx, char *name, int *is_dir)
+static int ram_entry(const char *dir, u32 idx, char *name, int *is_dir)
 {
     fs_init();
     u32 base = dir[0] ? slen(dir) + 1 : 0;
@@ -164,6 +222,35 @@ static int fs_entry(const char *dir, u32 idx, char *name, int *is_dir)
         }
     }
     return 0;
+}
+
+/* Lo que se ve de verdad en una carpeta: los archivos en memoria y, en la raíz, la carpeta "disco";
+ * dentro de "disco", lo que hay en el disco. */
+static int fs_entry(const char *dir, u32 idx, char *name, int *is_dir)
+{
+    if (is_disk(dir)) return fat_ready && fat_entry(disk_rel(dir), idx, name, is_dir);
+    if (!dir[0] && fat_ready) {
+        u32 nf = 0;
+        while (ram_entry(dir, nf, name, is_dir) && *is_dir) nf++;
+        if (idx == nf) {
+            const char *d = "disco";
+            u32 k = 0;
+            while (d[k]) { name[k] = d[k]; k++; }
+            name[k] = 0;
+            *is_dir = 1;
+            return 1;
+        }
+        if (idx > nf) idx--;
+    }
+    return ram_entry(dir, idx, name, is_dir);
+}
+
+/* ¿Es una imagen? (los archivos del disco no se abren para averiguarlo) */
+static const struct img *fs_img(const char *path)
+{
+    if (is_disk(path)) return 0;
+    const struct ramfs_file *f = fs_file(path);
+    return f ? f->img : 0;
 }
 
 /* Carpeta que contiene a 'path' (se cambia en el sitio) */

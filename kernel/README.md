@@ -14,6 +14,12 @@ Kernel propio, escrito en C y ensamblador para x86 de 32 bits. Arranca con GRUB 
 
 ![Captura real: el editor de texto escribiendo en un archivo nuevo](../capturas/editor.png)
 
+![Captura real: la carpeta disco, leída de un disco FAT32 hecho con Linux](../capturas/disco.png)
+
+![Captura real: un archivo creado desde el explorador y guardado en el disco](../capturas/disco_gui.png)
+
+![Captura real: un disco en blanco formateado como FAT32 por LirioOS](../capturas/formato.png)
+
 *Captura real del kernel arrancando en QEMU, generada automáticamente por el flujo de GitHub en cada cambio (carpeta `capturas/`).*
 
 ## Qué hace hoy
@@ -28,10 +34,11 @@ Kernel propio, escrito en C y ensamblador para x86 de 32 bits. Arranca con GRUB 
 - **Galería de imágenes** (Archivos → `imagenes`): miniaturas en la cuadrícula, visor con la imagen ajustada a la ventana y botones **Anterior** y **Siguiente**. Las imágenes de ejemplo (un lirio, olas con sol y un cielo de destellos) están dibujadas con código por `tools/gen_images.py` y se guardan con paleta de 256 colores.
 - **Editor de texto** dentro de Archivos: **Editar** abre un `.txt`, **Nuevo** crea `nuevo.txt` (o `nuevo2.txt`…), con teclado español (ñ, tildes), Retorno y Borrar; **Guardar** escribe el archivo y **Cancelar** lo descarta. Los archivos creados o editados caben hasta 4000 bytes, se guardan en el montón del kernel y **se pierden al apagar** (el disco llegará más adelante). Con mucho texto, la vista se desplaza para mostrar el final. El cursor está siempre al final del texto: aún no hay flechas izquierda/derecha.
 - **Interrupciones**: el kernel configura la tabla de interrupciones (IDT), reprograma el PIC y atiende tres: el **reloj** (PIT a 100 Hz), el **teclado** (IRQ 1) y el **ratón** (IRQ 12). Los dos últimos guardan cada byte en una cola de 256 entradas, así no se pierde ningún movimiento aunque el kernel esté dibujando; el bucle principal los procesa y, si no hay nada que hacer, duerme (`hlt`) hasta la siguiente interrupción. Se mantiene además una lectura de seguridad por sondeo, por si alguna máquina virtual no entrega una interrupción. El reloj da el doble clic, el comando `uptime` y el cursor parpadeante del editor.
+- **Disco duro y FAT32** (`ata.h`, `fat.h`): el kernel busca un disco ATA (IDE) en los cuatro sitios posibles, lo lee y lo escribe sin interrupciones (PIO, LBA de 28 bits) y entiende **FAT32**. Si el disco tiene un volumen FAT32, aparece la carpeta **`disco`** en la raíz, tanto en Archivos como en el terminal (`cd disco`, `ls`, `cat`). Puedes leer archivos, **crearlos y editarlos** (Archivos > Nuevo / Editar > Guardar, con los datos guardados de verdad), crear carpetas con `mkdir`, borrar con `rm` y ver el estado con `disco`. Un disco nuevo se prepara con **`formatear si`**, que escribe un FAT32 completo (sector de arranque y su copia, FSInfo, dos tablas FAT y raíz). Límites: nombres cortos 8.3 en mayúsculas (los nombres largos de otros sistemas se ven con su nombre corto `docume~1.txt`), sin fechas de acceso reales salvo la del reloj de la máquina, archivos de hasta 4000 bytes en el editor y sin imágenes en el disco todavía. Las escrituras llegan al disco antes de volver (no hay caché de escritura); aun así, no apagues en mitad de un guardado.
 - **Gestión de memoria** (`mem.h`): lee el mapa de memoria que entrega GRUB, lleva un bit por cada página física de 4 KiB (reservando los primeros MiB, el kernel y las estructuras de arranque) y reserva un **montón** de hasta 8 MiB con `kmalloc` / `kfree` (primer hueco libre, partición de bloques y unión de vecinos libres). El sistema de archivos ya no usa huecos fijos: guarda rutas y textos en ese montón y los libera al reescribirlos. El comando `mem` muestra la RAM total, libre, el montón y el mapa de GRUB.
 - Teclado **en español**: ñ, Ñ, ç, ¿ ¡, tildes y diéresis con las teclas muertas, Shift, Bloq Mayús, AltGr (`@ # | ~ { } [ ] \`) y flechas arriba/abajo para repetir comandos.
 - Sistema de archivos **en memoria** (ramfs) con carpetas y archivos escribibles: `bienvenida.txt`, `docs/`, `notas/` e `imagenes/`.
-- Terminal con `ayuda`, `ls [carpeta]`, `cd <carpeta>` (`..` y `/` también), `pwd`, `cat <archivo>`, `echo`, `date` (reloj de la máquina), `uptime`, `mem`, `whoami`, `uname`, `limpiar`, `reiniciar` y `apagar`. Si te equivocas de comando, sugiere el correcto; los comandos de Linux (`sudo`, `apt`…) explican que LirioOS no es Linux.
+- Terminal con `ayuda`, `ls [carpeta]`, `cd <carpeta>` (`..` y `/` también), `pwd`, `cat <archivo>`, `echo`, `date` (reloj de la máquina), `uptime`, `mem`, `disco`, `formatear si`, `mkdir`, `rm`, `whoami`, `uname`, `limpiar`, `reiniciar` y `apagar`. Si te equivocas de comando, sugiere el correcto; los comandos de Linux (`sudo`, `apt`…) explican que LirioOS no es Linux.
 
 ## Archivos
 
@@ -40,6 +47,9 @@ Kernel propio, escrito en C y ensamblador para x86 de 32 bits. Arranca con GRUB 
 | `boot.asm` | Cabecera Multiboot (pide el modo gráfico) y punto de entrada |
 | `kernel.c` | Teclado, ratón, ramfs, terminal y arranque |
 | `gui.h` | Dibujo: pantalla, fondo, dock, ventanas, consola, cursor, ratón y explorador |
+| `io.h` | Puertos de entrada/salida del procesador |
+| `ata.h` | Controlador de disco ATA (IDE) por PIO |
+| `fat.h` | Sistema de archivos FAT32: montar, leer, escribir, carpetas, borrar y formatear |
 | `mem.h` | Mapa de memoria, páginas físicas y montón (`kmalloc`/`kfree`) |
 | `fs.h` | Sistema de archivos en memoria (carpetas y archivos, editables, guardados en el montón) |
 | `images.h` | Imágenes de ejemplo (generado por `tools/gen_images.py`, no editar a mano) |
@@ -55,11 +65,13 @@ make run      # arranca la ISO en QEMU, si lo tienes instalado
 ```
 
 Sin instalar nada, ejecuta el flujo **Compilar kernel de LirioOS** en la pestaña Actions y descarga `LirioOS-kernel-iso`.
-Para probarlo en VirtualBox: máquina nueva "Other/Unknown", sin disco, con esa ISO en la unidad óptica. La pantalla debe quedar en 1024x768.
+Para probarlo en VirtualBox: máquina nueva "Other/Unknown" con esa ISO en la unidad óptica. La pantalla debe quedar en 1024x768.
+Para probar el disco: en Almacenamiento añade un **disco duro** nuevo (VDI, unos 64 MiB bastan) al controlador **IDE (PIIX4)**. Al arrancar el kernel lo detecta; escribe `formatear si` una vez y ya tendrás la carpeta `disco`. Un disco FAT32 hecho en otro sistema también vale.
+
+`tools/check_fat32.py imagen.img -t` es un verificador independiente de imágenes FAT32 (lo usa el CI para comprobar lo que escribe el kernel).
 
 ## Hoja de ruta
 
 1. Más aplicaciones reales (el explorador, el visor de imágenes y el editor ya existen): reproductor, ajustes.
-2. Disco (ATA) y lectura de FAT32; después crear y borrar archivos.
-3. Procesos y modo usuario.
-4. Más adelante, y mucho más grande: red, audio, USB (cámara), un navegador y compatibilidad con programas de Linux.
+2. Procesos y modo usuario (y cargar programas desde el disco).
+3. Más adelante, y mucho más grande: red, audio, USB (cámara), un navegador y compatibilidad con programas de Linux.

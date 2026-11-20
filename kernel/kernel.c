@@ -2,18 +2,6 @@
 
 #include "gui.h"
 
-static inline u8 inb(u16 port)
-{
-    u8 r;
-    __asm__ volatile ("inb %1, %0" : "=a"(r) : "Nd"(port));
-    return r;
-}
-
-static inline void outb(u16 port, u8 val)
-{
-    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
-
 /* ---------- Teclado español (consulta directa, juego de códigos 1) ---------- */
 
 #define DEAD_ACUTE  0x81
@@ -355,34 +343,51 @@ static u8 bcd(u8 v)
     return (u8)((v & 0x0F) + (v >> 4) * 10);
 }
 
-static void cmd_date(void)
+/* Lee el reloj de la máquina */
+static void rtc_now(u32 *year, u32 *mon, u32 *day, u32 *hour, u32 *min, u32 *sec)
 {
     u32 tries = 0;
     while ((cmos_read(0x0A) & 0x80) && tries++ < 100000) { }     /* espera si se está actualizando */
 
-    u8 sec = cmos_read(0x00), min = cmos_read(0x02), hour = cmos_read(0x04);
-    u8 day = cmos_read(0x07), mon = cmos_read(0x08), year = cmos_read(0x09);
+    u8 s = cmos_read(0x00), mi = cmos_read(0x02), h = cmos_read(0x04);
+    u8 d = cmos_read(0x07), mo = cmos_read(0x08), y = cmos_read(0x09);
     u8 rb = cmos_read(0x0B);
-    u8 pm = hour & 0x80;
+    u8 pm = h & 0x80;
 
     if (!(rb & 4)) {                               /* los valores vienen en BCD */
-        sec = bcd(sec); min = bcd(min); day = bcd(day); mon = bcd(mon); year = bcd(year);
-        hour = bcd(hour & 0x7F);
+        s = bcd(s); mi = bcd(mi); d = bcd(d); mo = bcd(mo); y = bcd(y);
+        h = bcd(h & 0x7F);
     } else {
-        hour &= 0x7F;
+        h &= 0x7F;
     }
     if (!(rb & 2)) {                               /* formato de 12 horas */
-        if (hour == 12) hour = 0;
-        if (pm) hour = (u8)(hour + 12);
+        if (h == 12) h = 0;
+        if (pm) h = (u8)(h + 12);
     }
+    *year = 2000u + y; *mon = mo; *day = d; *hour = h; *min = mi; *sec = s;
+}
 
-    put_num(2000u + year, ATTR_NORMAL); con_putc('-', ATTR_NORMAL);
-    put_num2(mon, ATTR_NORMAL);         con_putc('-', ATTR_NORMAL);
-    put_num2(day, ATTR_NORMAL);         con_putc(' ', ATTR_NORMAL);
-    put_num2(hour, ATTR_NORMAL);        con_putc(':', ATTR_NORMAL);
-    put_num2(min, ATTR_NORMAL);         con_putc(':', ATTR_NORMAL);
-    put_num2(sec, ATTR_NORMAL);
+static void cmd_date(void)
+{
+    u32 y, mo, d, h, mi, s;
+    rtc_now(&y, &mo, &d, &h, &mi, &s);
+    put_num(y, ATTR_NORMAL);   con_putc('-', ATTR_NORMAL);
+    put_num2(mo, ATTR_NORMAL); con_putc('-', ATTR_NORMAL);
+    put_num2(d, ATTR_NORMAL);  con_putc(' ', ATTR_NORMAL);
+    put_num2(h, ATTR_NORMAL);  con_putc(':', ATTR_NORMAL);
+    put_num2(mi, ATTR_NORMAL); con_putc(':', ATTR_NORMAL);
+    put_num2(s, ATTR_NORMAL);
     con_print("  (reloj de la máquina)\n", ATTR_SOFT);
+}
+
+/* Pone la fecha y la hora del reloj en los archivos que se escriban en el disco */
+static void fat_stamp(void)
+{
+    u32 y, mo, d, h, mi, s;
+    rtc_now(&y, &mo, &d, &h, &mi, &s);
+    if (y < 1980 || y > 2107 || mo < 1 || mo > 12 || d < 1 || d > 31) return;
+    fat_date = (u16)(((y - 1980) << 9) | (mo << 5) | d);
+    fat_time = (u16)((h << 11) | (mi << 5) | (s / 2));
 }
 
 /* ---------- Terminal ---------- */
@@ -395,7 +400,7 @@ static void banner(void)
     con_print(" | |   | | '__| |/ _ \\  | | | \\___ \\ \n", ATTR_PROMPT);
     con_print(" | |___| | |  | | (_) | | |_| |___) |\n", ATTR_PROMPT);
     con_print(" |_____|_|_|  |_|\\___/   \\___/|____/ \n\n", ATTR_PROMPT);
-    con_print("LirioOS kernel 0.10 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
+    con_print("LirioOS kernel 0.11 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
 }
 
 /* Escribe 'v' como 8 cifras hexadecimales */
@@ -433,6 +438,74 @@ static void cmd_mem(void)
         con_print(t == 1 ? "  libre      " : t == 3 ? "  ACPI       " : t == 4 ? "  ACPI NVS   " : t == 5 ? "  defectuosa " : "  reservada  ", ATTR_NORMAL);
         put_size((mem_regions[i].end - mem_regions[i].start) / 1024 + 1, ATTR_SOFT);
         con_putc('\n', ATTR_NORMAL);
+    }
+}
+
+/* ---------- Disco ---------- */
+
+static void cmd_disco(void)
+{
+    if (!disk_present) {
+        con_print("No hay ningún disco duro conectado. En VirtualBox añade un disco al controlador IDE.\n", ATTR_NORMAL);
+        return;
+    }
+    con_print("Disco: ", ATTR_SOFT);
+    put_latin1(disk_model, ATTR_NORMAL);
+    con_print(", ", ATTR_NORMAL);
+    put_size(disk_sectors / 2, ATTR_NORMAL);
+    con_putc('\n', ATTR_NORMAL);
+    if (fat_ready) {
+        con_print("Formato FAT32, etiqueta '", ATTR_SOFT);
+        put_latin1(fat_label, ATTR_NORMAL);
+        con_print("': ", ATTR_SOFT);
+        put_size(fat_count_free() * fat_spc / 2, ATTR_NORMAL);
+        con_print(" libres. Sus archivos están en la carpeta 'disco'.\n", ATTR_NORMAL);
+    } else {
+        con_print("Sin formato FAT32. Escribe 'formatear si' para prepararlo (borra todo lo que tenga).\n", ATTR_NORMAL);
+    }
+}
+
+static void cmd_formatear(const char *arg)
+{
+    if (!disk_present) {
+        con_print("No hay ningún disco duro conectado.\n", ATTR_NORMAL);
+        return;
+    }
+    if (!str_eq(arg, "si") && !str_eq(arg, "sí")) {
+        con_print("Esto BORRA todo el disco (", ATTR_NORMAL);
+        put_size(disk_sectors / 2, ATTR_NORMAL);
+        con_print("). Si estás seguro, escribe: formatear si\n", ATTR_NORMAL);
+        return;
+    }
+    con_print("Formateando como FAT32, puede tardar unos segundos...\n", ATTR_SOFT);
+    if (fat_format()) {
+        disk_forget();
+        con_print("Listo: disco FAT32 con la etiqueta LIRIO. Ábrelo en la carpeta 'disco'.\n", ATTR_NORMAL);
+    } else {
+        con_print("No se pudo formatear el disco.\n", ATTR_NORMAL);
+    }
+}
+
+/* mkdir y rm: solo dentro de la carpeta 'disco' (lo demás vive en la memoria y es fijo) */
+static void cmd_disk_edit(const char *cmd, const char *arg)
+{
+    char path[PATH_MAX];
+    int mk = str_eq(cmd, "mkdir");
+    if (arg[0] == 0) {
+        con_print(mk ? "uso: mkdir <carpeta>\n" : "uso: rm <archivo o carpeta vacía>\n", ATTR_NORMAL);
+    } else if (!path_resolve(arg, path)) {
+        con_print("ruta demasiado larga\n", ATTR_NORMAL);
+    } else if (!is_disk(path) || path[5] == 0) {
+        put_latin1(cmd, ATTR_NORMAL);
+        con_print(": solo se puede dentro de la carpeta 'disco'.\n", ATTR_NORMAL);
+    } else if (!fat_ready) {
+        con_print("No hay un disco FAT32 montado (mira 'disco').\n", ATTR_NORMAL);
+    } else if (mk ? fat_mkdir(disk_rel(path)) : fat_remove(disk_rel(path))) {
+        disk_forget();
+        con_print(mk ? "Carpeta creada.\n" : "Borrado.\n", ATTR_NORMAL);
+    } else {
+        con_print(mk ? "No se pudo crear (¿ya existe, el nombre no es 8.3 o no hay sitio?).\n"
+                     : "No se pudo borrar (¿no existe, o es una carpeta con cosas dentro?).\n", ATTR_NORMAL);
     }
 }
 
@@ -500,7 +573,7 @@ static void interrupts_init(void)
 
 static const char *const known_cmds[] = {
     "ayuda", "help", "ls", "cd", "pwd", "cat", "echo", "limpiar", "clear", "about", "uname",
-    "whoami", "date", "fecha", "uptime", "mem", "reiniciar", "reboot", "apagar", "halt",
+    "whoami", "date", "fecha", "uptime", "mem", "disco", "formatear", "rm", "mkdir", "reiniciar", "reboot", "apagar", "halt",
 };
 #define KNOWN_COUNT (sizeof(known_cmds) / sizeof(known_cmds[0]))
 
@@ -508,7 +581,7 @@ static const char *const known_cmds[] = {
 static const char *const linux_cmds[] = {
     "sudo", "su", "apt", "apt-get", "dpkg", "pacman", "dnf", "yum", "snap", "pip", "npm",
 };
-static const char *const edit_cmds[] = { "mkdir", "rm", "touch", "cp", "mv", "nano", "vim" };
+static const char *const edit_cmds[] = { "touch", "cp", "mv", "nano", "vim" };
 
 static u32 edit_distance(const char *a, const char *b)
 {
@@ -560,6 +633,10 @@ static void run_command(const char *line)
         con_print("  date            fecha y hora del reloj de la máquina\n", ATTR_NORMAL);
         con_print("  uptime          cuánto lleva encendido el sistema\n", ATTR_NORMAL);
         con_print("  mem             memoria: total, libre y mapa de la RAM\n", ATTR_NORMAL);
+        con_print("  disco           estado del disco duro y de su carpeta 'disco'\n", ATTR_NORMAL);
+        con_print("  formatear si    deja el disco como FAT32 vacío (borra todo)\n", ATTR_NORMAL);
+        con_print("  mkdir <ruta>    crea una carpeta (solo dentro de 'disco')\n", ATTR_NORMAL);
+        con_print("  rm <ruta>       borra un archivo o una carpeta vacía (solo en 'disco')\n", ATTR_NORMAL);
         con_print("  whoami, uname   quién eres y qué sistema es este\n", ATTR_NORMAL);
         con_print("  limpiar         borra la pantalla\n", ATTR_NORMAL);
         con_print("  reiniciar, apagar\n", ATTR_NORMAL);
@@ -621,6 +698,12 @@ static void run_command(const char *line)
         cmd_date();
     } else if (str_eq(cmd, "mem")) {
         cmd_mem();
+    } else if (str_eq(cmd, "disco")) {
+        cmd_disco();
+    } else if (str_eq(cmd, "formatear")) {
+        cmd_formatear(arg);
+    } else if (str_eq(cmd, "mkdir") || str_eq(cmd, "rm")) {
+        cmd_disk_edit(cmd, arg);
     } else if (str_eq(cmd, "uptime")) {
         u32 t = ticks;
         con_print("Encendido hace ", ATTR_NORMAL);
@@ -633,11 +716,11 @@ static void run_command(const char *line)
     } else if (str_eq(cmd, "whoami")) {
         con_print("lirio\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "uname")) {
-        con_print("LirioOS 0.10 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
+        con_print("LirioOS 0.11 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "clear") || str_eq(cmd, "limpiar")) {
         con_clear();
     } else if (str_eq(cmd, "about")) {
-        con_print("LirioOS 0.10 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
+        con_print("LirioOS 0.11 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "reboot") || str_eq(cmd, "reiniciar")) {
         outb(0x64, 0xFE);
     } else if (str_eq(cmd, "halt") || str_eq(cmd, "apagar")) {
@@ -648,7 +731,7 @@ static void run_command(const char *line)
         con_print(" es un comando de Linux. LirioOS no es Linux: aquí no hay usuarios ni paquetes (todavía).\n", ATTR_NORMAL);
     } else if (in_list(cmd, edit_cmds, sizeof(edit_cmds) / sizeof(edit_cmds[0]))) {
         put_latin1(cmd, ATTR_NORMAL);
-        con_print(": todavía no se pueden crear ni cambiar archivos (el sistema de archivos es de solo lectura).\n", ATTR_NORMAL);
+        con_print(": todavía no existe. Para escribir texto usa Archivos > Nuevo o Editar; para borrar, rm; para carpetas, mkdir.\n", ATTR_NORMAL);
     } else {
         con_print("comando desconocido: ", ATTR_NORMAL);
         put_latin1(cmd, ATTR_NORMAL);
@@ -766,6 +849,15 @@ void kmain(u32 magic, u32 info)
     banner();
     print_video_info(mb);
     interrupts_init();
+
+    fat_clock = fat_stamp;
+    if (disk_init()) {
+        con_print("Disco: ", ATTR_SOFT);
+        put_latin1(disk_model, ATTR_NORMAL);
+        con_print(", ", ATTR_NORMAL);
+        put_size(disk_sectors / 2, ATTR_NORMAL);
+        con_print(fat_mount() ? " (FAT32 montado: carpeta 'disco')\n" : " (sin formato FAT32: escribe 'disco')\n", ATTR_NORMAL);
+    }
 
     for (;;) {
         u32 hpos = hist_n;

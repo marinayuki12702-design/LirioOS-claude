@@ -10,6 +10,7 @@ typedef unsigned int   u32;
 typedef signed int     s32;
 
 #include "font.h"
+#include "io.h"
 #include "mem.h"
 #include "fs.h"
 
@@ -676,6 +677,7 @@ static void exp_cell(int i, s32 *x, s32 *y)
 }
 
 static int exp_is_img(void);
+static int exp_too_big(void);
 
 /* Qué hay bajo (px, py) en el explorador: número de elemento, un botón (EXP_*) o -1 */
 static int exp_target(s32 px, s32 py)
@@ -692,7 +694,7 @@ static int exp_target(s32 px, s32 py)
             return -1;
         }
         if (!exp_file[0] && px >= app_x + 182 && px < app_x + 258) return EXP_NEW;
-        if (exp_file[0] && !exp_is_img() && px >= app_x + 98 && px < app_x + 174) return EXP_EDIT;
+        if (exp_file[0] && !exp_is_img() && !exp_too_big() && px >= app_x + 98 && px < app_x + 174) return EXP_EDIT;
         if (px >= app_x + 14 && px < app_x + 90) return exp_file[0] ? EXP_BACK : EXP_UP;
         if (!exp_file[0] && px >= app_x + 98 && px < app_x + 174) return EXP_HOME;
         if (exp_is_img() && px >= app_x + 98 && px < app_x + 174) return EXP_PREV;
@@ -713,6 +715,12 @@ static int exp_is_img(void)
 {
     const struct ramfs_file *f = exp_file[0] ? fs_file(exp_file) : 0;
     return f && f->img;
+}
+
+/* ¿El archivo abierto es demasiado grande para editarlo? (solo pasa con archivos del disco) */
+static int exp_too_big(void)
+{
+    return exp_file[0] && is_disk(exp_file) && fs_file(exp_file) && disk_big;
 }
 
 /* Pasa a la imagen anterior (-1) o siguiente (+1) de la carpeta, dando la vuelta al llegar al final */
@@ -929,7 +937,7 @@ static void draw_explorer(void)
         bar_x = x + 198;
     } else if (viewing) {
         draw_button(x + 14, y + 44, 76, "Volver", exp_hover == EXP_BACK, 0);
-        if (!img_view) draw_button(x + 98, y + 44, 76, "Editar", exp_hover == EXP_EDIT, 0);
+        if (!img_view) draw_button(x + 98, y + 44, 76, "Editar", exp_hover == EXP_EDIT, exp_too_big());
         if (img_view) {
             draw_button(x + 98, y + 44, 76, "Anterior", exp_hover == EXP_PREV, 0);
             draw_button(x + 182, y + 44, 84, "Siguiente", exp_hover == EXP_NEXT, 0);
@@ -983,17 +991,17 @@ static void draw_explorer(void)
         exp_cell(i, &cx, &cy);
         if (exp_sel == i) fill_rrect(cx + 4, cy + 4, EXP_CW - 8, EXP_CH - 8, 12, 0xB9A2F5, 90);
         if (exp_hover == i) fill_rrect(cx + 4, cy + 4, EXP_CW - 8, EXP_CH - 8, 12, 0xFFFFFF, 45);
-        const struct ramfs_file *tf = 0;
+        const struct img *timg = 0;
         if (!is_dir) {
             char tp[PATH_MAX];
             fs_join(exp_dir, name, tp);
-            tf = fs_file(tp);
+            timg = fs_img(tp);
         }
         if (is_dir) {
             draw_folder_icon(cx + EXP_CW / 2, cy + 12);
-        } else if (tf && tf->img) {
+        } else if (timg) {
             fill_rrect(cx + EXP_CW / 2 - 35, cy + 8, 70, 54, 8, 0x1E1535, 255);
-            draw_image_fit(tf->img, cx + EXP_CW / 2 - 32, cy + 11, 64, 48);
+            draw_image_fit(timg, cx + EXP_CW / 2 - 32, cy + 11, 64, 48);
         } else {
             draw_file_icon(cx + EXP_CW / 2, cy + 10);
         }
