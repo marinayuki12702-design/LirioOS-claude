@@ -171,7 +171,6 @@ jobs:
 
       - name: Comprobar el disco con las herramientas de Linux
         working-directory: kernel
-        continue-on-error: true
         run: |
           echo "--- fsck.vfat ---"
           fsck.vfat -n disco.img

@@ -49,6 +49,35 @@ static u32 fat_get(u32 c)
     return rd32(fc_buf + (c % 128) * 4) & FAT_MASK;
 }
 
+/* Cuántos clusters libres quedan (recorre toda la tabla) */
+static u32 fat_count_free(void)
+{
+    u32 n = 0;
+    for (u32 c = 2; c < fat_clusters + 2; c++) if (fat_get(c) == 0) n++;
+    return n;
+}
+
+/* Contador de clusters libres que el sistema guarda en el sector FSInfo (otros sistemas lo leen para
+ * saber cuánto espacio queda sin recorrer toda la FAT). Se calcula al primer cambio y se mantiene al día. */
+static u32 fat_free_cnt;
+static int fat_free_known;
+static u32 fat_fsinfo;                  /* sector del FSInfo, 0 si no hay */
+
+static void fat_need_count(void)
+{
+    if (!fat_free_known) { fat_free_cnt = fat_count_free(); fat_free_known = 1; }
+}
+
+static void fat_fsinfo_sync(void)
+{
+    u8 sec[512];
+    if (!fat_fsinfo || !fat_free_known || !disk_read(fat_fsinfo, sec)) return;
+    if (rd32(sec) != 0x41615252u || rd32(sec + 484) != 0x61417272u) return;
+    wr32(sec + 488, fat_free_cnt);
+    wr32(sec + 492, fat_hint >= 2 ? fat_hint : 0xFFFFFFFFu);
+    disk_write(fat_fsinfo, sec);
+}
+
 static int fat_put(u32 c, u32 v)
 {
     u8 sec[512];
@@ -73,6 +102,7 @@ static u32 fat_alloc(void)
         if (fat_get(c) == 0) {
             if (!fat_put(c, FAT_MASK)) return 0;
             fat_hint = c + 1;
+            if (fat_free_known) fat_free_cnt--;
             return c;
         }
     }
@@ -84,7 +114,7 @@ static void fat_free_chain(u32 c)
     u32 guard = 0;
     while (c >= 2 && c < FAT_EOC && guard++ < 0x10000000u) {
         u32 n = fat_get(c);
-        fat_put(c, 0);
+        if (fat_put(c, 0) && fat_free_known) fat_free_cnt++;
         c = n;
     }
 }
@@ -123,6 +153,8 @@ static int fat_parse_bpb(u32 lba, const u8 *s)
     for (int i = 10; i >= 0 && fat_label[i] == ' '; i--) fat_label[i] = 0;
     fat_hint = 2;
     fc_lba = 0xFFFFFFFFu;
+    fat_free_known = 0;
+    fat_fsinfo = rd16(s + 48) ? lba + rd16(s + 48) : 0;
     return 1;
 }
 
@@ -390,9 +422,11 @@ static int fat_read_file(const char *rel, u8 *buf, u32 max, u32 *len)
     return 1;
 }
 
+/* (las tres operaciones que cambian el disco llevan después la cuenta de clusters libres al FSInfo) */
 /* Crea o reemplaza un archivo. Primero se escribe lo nuevo y solo después se libera lo viejo. */
-static int fat_write_file(const char *rel, const u8 *data, u32 len)
+static int fat_write_file_inner(const char *rel, const u8 *data, u32 len)
 {
+    if (fat_ready) fat_need_count();
     char dir[PATH_MAX], leaf[16];
     u32 dc, lba = 0, off = 0;
     u8 name[11], e[32], sec[512];
@@ -431,8 +465,9 @@ static int fat_write_file(const char *rel, const u8 *data, u32 len)
     return 1;
 }
 
-static int fat_mkdir(const char *rel)
+static int fat_mkdir_inner(const char *rel)
 {
+    if (fat_ready) fat_need_count();
     char dir[PATH_MAX], leaf[16];
     u32 dc, lba, off;
     u8 name[11], e[32], sec[512];
@@ -460,8 +495,9 @@ static int fat_mkdir(const char *rel)
 }
 
 /* Borra un archivo o una carpeta vacía */
-static int fat_remove(const char *rel)
+static int fat_remove_inner(const char *rel)
 {
+    if (fat_ready) fat_need_count();
     char dir[PATH_MAX], leaf[16];
     u32 dc, lba, off;
     u8 name[11], e[32], sec[512];
@@ -493,15 +529,28 @@ static int fat_remove(const char *rel)
     return 1;
 }
 
-/* Cuántos clusters libres quedan */
-static u32 fat_count_free(void)
+/* ---------- Formatear ---------- */
+
+static int fat_write_file(const char *rel, const u8 *data, u32 len)
 {
-    u32 n = 0;
-    for (u32 c = 2; c < fat_clusters + 2; c++) if (fat_get(c) == 0) n++;
-    return n;
+    int r = fat_write_file_inner(rel, data, len);
+    fat_fsinfo_sync();
+    return r;
 }
 
-/* ---------- Formatear ---------- */
+static int fat_mkdir(const char *rel)
+{
+    int r = fat_mkdir_inner(rel);
+    fat_fsinfo_sync();
+    return r;
+}
+
+static int fat_remove(const char *rel)
+{
+    int r = fat_remove_inner(rel);
+    fat_fsinfo_sync();
+    return r;
+}
 
 /* Deja el disco entero como un FAT32 vacío (sin tabla de particiones). Borra todo lo que hubiera. */
 static int fat_format(void)
@@ -540,7 +589,7 @@ static int fat_format(void)
     u8 fi[512];                                               /* sector de información (FSInfo) */
     fat_zero(fi, 512);
     wr32(fi, 0x41615252u);  wr32(fi + 484, 0x61417272u);
-    wr32(fi + 488, 0xFFFFFFFFu);  wr32(fi + 492, 0xFFFFFFFFu);
+    wr32(fi + 488, clusters - 1);  wr32(fi + 492, 3);        /* libres (todos menos la raíz) y por dónde seguir */
     wr32(fi + 508, 0xAA550000u);
 
     if (!disk_write(0, b) || !disk_write(6, b) || !disk_write(1, fi) || !disk_write(7, fi)) return 0;
@@ -557,12 +606,20 @@ static int fat_format(void)
             if (!disk_write(base + s, z)) return 0;
     }
     u32 data = res + nf * fatsz;
-    for (u32 s = 0; s < spc; s++)                             /* carpeta raíz vacía */
+    u8 rootsec[512];                                          /* carpeta raíz: solo la etiqueta del volumen */
+    fat_zero(rootsec, 512);
+    for (int i = 0; i < 11; i++) rootsec[i] = (u8)lab[i];
+    rootsec[11] = 0x08;
+    wr16(rootsec + 22, fat_time);  wr16(rootsec + 24, fat_date);
+    if (!disk_write(data, rootsec)) return 0;
+    for (u32 s = 1; s < spc; s++)
         if (!disk_write(data + s, z)) return 0;
-    (void)clusters;
 
     fat_forget();
-    return fat_mount();
+    if (!fat_mount()) return 0;
+    fat_free_cnt = clusters - 1;
+    fat_free_known = 1;
+    return 1;
 }
 
 #endif

@@ -97,6 +97,27 @@ def main():
     for c in sorted(set(owner) - used):
         errors.append("cluster %d tiene dueño pero está libre en la FAT" % c)
         break
+    fsinfo_sec = struct.unpack_from("<H", d, 48)[0]
+    if fsinfo_sec:
+        fi = d[fsinfo_sec * 512:(fsinfo_sec + 1) * 512]
+        if struct.unpack_from("<I", fi, 0)[0] != 0x41615252 or struct.unpack_from("<I", fi, 484)[0] != 0x61417272:
+            errors.append("el sector FSInfo no tiene las firmas correctas")
+        else:
+            free_info = struct.unpack_from("<I", fi, 488)[0]
+            real_free = clusters - len(used)
+            if free_info != 0xFFFFFFFF and free_info != real_free:
+                errors.append("FSInfo dice %d clusters libres, pero hay %d" % (free_info, real_free))
+    label = d[71:82].decode("latin1").rstrip()
+    root_label = None
+    raw = read_chain(chain(root))
+    for o in range(0, len(raw), 32):
+        e = raw[o:o + 32]
+        if e[0] == 0:
+            break
+        if e[0] != 0xE5 and e[11] == 0x08:
+            root_label = e[:11].decode("latin1").rstrip()
+    if label != "NO NAME" and label != (root_label or ""):
+        errors.append("etiqueta del sector de arranque '%s' distinta de la de la raíz '%s'" % (label, root_label))
     print("FAT32: %d clusters de %d bytes, %d usados, %d archivos" % (clusters, spc * 512, len(used), len(files)))
     if errors:
         for e in errors:
