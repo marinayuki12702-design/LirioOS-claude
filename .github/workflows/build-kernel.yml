@@ -255,8 +255,10 @@ jobs:
             for k in e c h o spc v i v o ret; do echo "sendkey $k"; sleep 0.3; done
             sleep 5
             echo "screendump /tmp/multi2.ppm"
-            for k in m a t a r spc 1 ret; do echo "sendkey $k"; sleep 0.3; done
-            sleep 1
+            sleep 2
+            echo "sendkey ret"; sleep 0.5
+            for k in m a t a r spc 1 ret; do echo "sendkey $k"; sleep 0.5; done
+            sleep 2
             for k in p s ret; do echo "sendkey $k"; sleep 0.3; done
             sleep 1
             echo "screendump /tmp/multi3.ppm"
