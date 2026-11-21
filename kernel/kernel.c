@@ -401,7 +401,7 @@ static void banner(void)
     con_print(" | |   | | '__| |/ _ \\  | | | \\___ \\ \n", ATTR_PROMPT);
     con_print(" | |___| | |  | | (_) | | |_| |___) |\n", ATTR_PROMPT);
     con_print(" |_____|_|_|  |_|\\___/   \\___/|____/ \n\n", ATTR_PROMPT);
-    con_print("LirioOS kernel 0.12 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
+    con_print("LirioOS kernel 0.13 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
 }
 
 /* Escribe 'v' como 8 cifras hexadecimales */
@@ -534,12 +534,6 @@ extern void irq12_stub(void);
 
 static struct idt_entry idt[256];
 
-/* La llama irq0_stub (boot.asm) 100 veces por segundo */
-void timer_irq(void)
-{
-    ticks++;
-    outb(0x20, 0x20);                               /* fin de interrupción para el PIC */
-}
 
 static u16 idt_cs;
 
@@ -633,28 +627,33 @@ static void cmd_ejecutar(const char *arg)
         img = buf;
     }
 
-    int code = 0;
-    int ran = proc_exec(arg, img, len, &code);
+    u32 pid = proc_spawn(arg, img, len);
     if (buf) kfree(buf);
-    if (!ran) {
+    if (!pid) {
         con_print("ejecutar: ", ATTR_NORMAL);
         con_print(proc_err, ATTR_NORMAL);
         con_putc('\n', ATTR_NORMAL);
-    } else if (proc_faulted) {
-        con_print("[pid ", ATTR_SOFT); put_num(proc_last_pid, ATTR_SOFT);
-        con_print("] detenido por el sistema: ", ATTR_SOFT);
-        proc_fault_print();
-        con_putc('\n', ATTR_NORMAL);
     } else {
-        con_print("[pid ", ATTR_SOFT); put_num(proc_last_pid, ATTR_SOFT);
-        con_print("] terminó con código ", ATTR_SOFT); put_num((u32)code, ATTR_SOFT);
-        con_putc('\n', ATTR_NORMAL);
+        con_print("[pid ", ATTR_SOFT); put_num(pid, ATTR_SOFT);
+        con_print("] en marcha en segundo plano ('ps' los lista, 'matar <pid>' los detiene)\n", ATTR_SOFT);
     }
+}
+
+static void cmd_matar(const char *arg)
+{
+    u32 pid = 0;
+    int ok = arg[0] >= '0' && arg[0] <= '9';
+    for (const char *p = arg; *p; p++) {
+        if (*p < '0' || *p > '9') { ok = 0; break; }
+        pid = pid * 10 + (u32)(*p - '0');
+    }
+    if (!ok) con_print("uso: matar <pid>   (mira 'ps')\n", ATTR_NORMAL);
+    else if (!proc_kill(pid)) con_print("matar: no hay ningún programa con ese pid\n", ATTR_NORMAL);
 }
 
 static const char *const known_cmds[] = {
     "ayuda", "help", "ls", "cd", "pwd", "cat", "echo", "limpiar", "clear", "about", "uname",
-    "whoami", "date", "fecha", "uptime", "mem", "disco", "formatear", "rm", "mkdir", "ejecutar", "programas", "reiniciar", "reboot", "apagar", "halt",
+    "whoami", "date", "fecha", "uptime", "mem", "disco", "formatear", "rm", "mkdir", "ejecutar", "programas", "ps", "matar", "reiniciar", "reboot", "apagar", "halt",
 };
 #define KNOWN_COUNT (sizeof(known_cmds) / sizeof(known_cmds[0]))
 
@@ -719,7 +718,8 @@ static void run_command(const char *line)
         con_print("  mkdir <ruta>    crea una carpeta (solo dentro de 'disco')\n", ATTR_NORMAL);
         con_print("  rm <ruta>       borra un archivo o una carpeta vacía (solo en 'disco')\n", ATTR_NORMAL);
         con_print("  programas       lista los programas incluidos en el sistema\n", ATTR_NORMAL);
-        con_print("  ejecutar <prog> ejecuta un programa (uno incluido o un .elf del disco)\n", ATTR_NORMAL);
+        con_print("  ejecutar <prog> lanza un programa en segundo plano (incluido o .elf del disco)\n", ATTR_NORMAL);
+        con_print("  ps, matar <pid> programas en marcha / detener uno\n", ATTR_NORMAL);
         con_print("  whoami, uname   quién eres y qué sistema es este\n", ATTR_NORMAL);
         con_print("  limpiar         borra la pantalla\n", ATTR_NORMAL);
         con_print("  reiniciar, apagar\n", ATTR_NORMAL);
@@ -781,6 +781,10 @@ static void run_command(const char *line)
         cmd_date();
     } else if (str_eq(cmd, "programas")) {
         cmd_programas();
+    } else if (str_eq(cmd, "ps")) {
+        proc_list();
+    } else if (str_eq(cmd, "matar")) {
+        cmd_matar(arg);
     } else if (str_eq(cmd, "ejecutar")) {
         cmd_ejecutar(arg);
     } else if (str_eq(cmd, "mem")) {
@@ -803,11 +807,11 @@ static void run_command(const char *line)
     } else if (str_eq(cmd, "whoami")) {
         con_print("lirio\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "uname")) {
-        con_print("LirioOS 0.12 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
+        con_print("LirioOS 0.13 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "clear") || str_eq(cmd, "limpiar")) {
         con_clear();
     } else if (str_eq(cmd, "about")) {
-        con_print("LirioOS 0.12 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
+        con_print("LirioOS 0.13 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "reboot") || str_eq(cmd, "reiniciar")) {
         outb(0x64, 0xFE);
     } else if (str_eq(cmd, "halt") || str_eq(cmd, "apagar")) {
@@ -959,7 +963,8 @@ void kmain(u32 magic, u32 info)
             u32 c = input_poll();
             if (!c) {
                 gui_tick();
-                __asm__ volatile ("hlt");              /* duerme hasta la siguiente interrupción (10 ms como mucho) */
+                sched_reap();                          /* avisa de los programas que han terminado */
+                sched_idle();                          /* deja su turno a los programas, o duerme hasta la siguiente interrupción */
                 continue;
             }
             if (gui_key(c)) continue;                 /* con el editor abierto, las teclas son para él */

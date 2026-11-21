@@ -239,6 +239,33 @@ jobs:
           convert /tmp/procesos2.ppm ../capturas/procesos2.png
           fsck.vfat -n progs.img
 
+      - name: Probar la multitarea (varios programas a la vez)
+        working-directory: kernel
+        run: |
+          (
+            sleep 12
+            for k in e j e c u t a r spc b u c l e ret; do echo "sendkey $k"; sleep 0.3; done
+            for k in e j e c u t a r spc c o n t a r ret; do echo "sendkey $k"; sleep 0.3; done
+            for k in e j e c u t a r spc c o n t a r ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 1
+            for k in p s ret; do echo "sendkey $k"; sleep 0.3; done
+            echo "screendump /tmp/multi1.ppm"
+            # el escritorio sigue respondiendo aunque 'bucle' no pare: se mueve el ratón y se teclea
+            for i in 1 2 3 4 5; do echo "mouse_move 40 30"; sleep 0.3; done
+            for k in e c h o spc v i v o ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 5
+            echo "screendump /tmp/multi2.ppm"
+            for k in m a t a r spc 1 ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 1
+            for k in p s ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 1
+            echo "screendump /tmp/multi3.ppm"
+            echo "quit"
+          ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -boot d -m 256 -vga std -display none -monitor stdio -no-reboot
+          convert /tmp/multi1.ppm ../capturas/multi1.png
+          convert /tmp/multi2.ppm ../capturas/multi2.png
+          convert /tmp/multi3.ppm ../capturas/multi3.png
+
       - name: Guardar las capturas en el repositorio
         if: always() && github.ref == 'refs/heads/main'
         run: |

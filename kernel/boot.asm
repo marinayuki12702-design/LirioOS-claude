@@ -45,13 +45,22 @@ idt_load:
     lidt [eax]
     ret
 
-; Interrupción 0 del PIC = temporizador: guarda los registros, avisa al kernel y vuelve
+; Interrupción 0 del PIC = temporizador: guarda los registros, avisa al kernel (que puede cambiar de proceso) y vuelve
 global irq0_stub
 extern timer_irq
 irq0_stub:
     pushad
+    push ds
+    push es
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
     cld
+    push esp
     call timer_irq
+    add esp, 4
+    pop es
+    pop ds
     popad
     iret
 
@@ -172,20 +181,32 @@ syscall_stub:
     add esp, 8
     iret
 
-; int run_user(u32 entrada, u32 pila, u32 cr3): salta al anillo 3 y no vuelve hasta que el programa
-; termine (user_return) o falle. Devuelve el código de salida.
-global run_user
-extern kernel_cr3
-run_user:
+; void switch_to(u32 *guarda_esp, u32 nuevo_esp, u32 nuevo_cr3): cambia de proceso. Guarda los registros del
+; actual en su pila de kernel, apunta a la pila del siguiente (y a su espacio de memoria) y sigue por donde
+; ese se quedó. Se llama siempre con las interrupciones desactivadas.
+global switch_to
+switch_to:
+    mov eax, [esp + 4]
+    mov ecx, [esp + 8]
+    mov edx, [esp + 12]
     push ebp
     push ebx
     push esi
     push edi
-    mov [kernel_resume_esp], esp
-    mov eax, [esp + 20]
-    mov ecx, [esp + 24]
-    mov edx, [esp + 28]
+    mov [eax], esp
+    mov esp, ecx
     mov cr3, edx
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+; Primera vez que se ejecuta un proceso nuevo: la pila trae [entrada][esp de usuario]; salta al anillo 3
+global task_start
+task_start:
+    pop eax
+    pop ecx
     mov bx, 0x23
     mov ds, bx
     mov es, bx
@@ -197,27 +218,5 @@ run_user:
     push dword 0x1B         ; cs de usuario
     push eax                ; eip
     iret
-
-; void user_return(int codigo): abandona el programa y vuelve a quien llamó a run_user
-global user_return
-user_return:
-    mov eax, [esp + 4]
-    mov esp, [kernel_resume_esp]
-    mov edx, [kernel_cr3]
-    mov cr3, edx
-    mov cx, 0x10
-    mov ds, cx
-    mov es, cx
-    mov fs, cx
-    mov gs, cx
-    pop edi
-    pop esi
-    pop ebx
-    pop ebp
-    sti
-    ret
-
-section .bss
-kernel_resume_esp: resd 1
 
 section .note.GNU-stack noalloc noexec nowrite progbits

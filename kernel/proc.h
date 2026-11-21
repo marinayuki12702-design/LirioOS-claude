@@ -7,7 +7,10 @@
  *     si venían de modo usuario (y paran el kernel si fueron culpa suya).
  *   - Cargador de ELF: copia los segmentos del programa a páginas nuevas y salta al anillo 3.
  *
- * Esta primera versión ejecuta un programa a la vez hasta que termina (sin multitarea). */
+ *   - Multitarea: varios programas a la vez. El temporizador (100 veces por segundo) reparte el procesador
+ *     entre ellos por turnos (round robin); el propio kernel con su escritorio es el proceso 0.
+ *     Mientras un proceso está dentro del kernel (llamada al sistema) no se le quita el procesador, salvo
+ *     cuando se duerme: así los datos del kernel nunca se corrompen a medias. */
 
 #ifndef LIRIO_PROC_H
 #define LIRIO_PROC_H
@@ -30,17 +33,31 @@ struct exc_frame {
 static int  paging_ok;                              /* 1 = la paginación está activada */
 u32 kernel_cr3;                                     /* lo usa user_return (boot.asm) */
 
-struct proc {
+#define MAX_TASKS 8
+#define KSTACK_PAGES 2u
+
+enum { T_FREE = 0, T_READY, T_SLEEP, T_ZOMBIE };
+
+struct task {
+    u32 state;
     u32 pid;
+    u32 esp;                                        /* esp de la pila de kernel mientras no se ejecuta */
+    u32 kstack;                                     /* base de su pila de kernel (2 páginas) */
     u32 pd, pt;                                     /* directorio y tabla de páginas del programa */
+    u32 wake;                                       /* si duerme: tic en que despierta */
+    int code;                                       /* código de salida */
+    int faulted;                                    /* lo detuvo una excepción */
+    int killed;                                     /* lo detuvo el usuario con 'matar' */
+    u32 fvec, faddr, feip;
+    u32 start;                                      /* tic en que empezó */
+    char name[16];
 };
-static struct proc *proc_cur;                       /* programa que se está ejecutando, o 0 */
+static struct task tasks[MAX_TASKS];                /* tasks[0] es el kernel (escritorio y terminal) */
+static u32 cur_t;                                   /* índice del proceso que se ejecuta */
+static struct task *proc_cur;                       /* el proceso de usuario actual, o 0 si es el kernel */
 static u32 next_pid = 1;
-static u32 proc_last_pid;
 
 static const char *proc_err;                        /* por qué no se pudo lanzar */
-static int proc_faulted;                            /* el programa fue detenido por una excepción */
-static u32 proc_fault_vec, proc_fault_addr, proc_fault_eip;
 
 #ifdef LIRIO_HOST
 
@@ -49,19 +66,24 @@ static void gdt_init(void) { }
 static void paging_init(void) { }
 static u32 exc_table[32];
 static void syscall_stub(void) { }
-static int proc_exec(const char *name, const u8 *img, u32 len, int *code)
+void timer_irq(void) { ticks++; outb(0x20, 0x20); }
+static u32 proc_spawn(const char *name, const u8 *img, u32 len)
 {
-    (void)name; (void)img; (void)len; (void)code;
+    (void)name; (void)img; (void)len;
     proc_err = "sin modo usuario en este entorno";
     return 0;
 }
+static void sched_idle(void) { }
+static void sched_reap(void) { }
+static int proc_kill(u32 pid) { (void)pid; return 0; }
+static void proc_list(void) { }
 
 #else
 
 extern void gdt_flush(const void *p);
 extern void tss_flush(void);
-extern int  run_user(u32 entry, u32 esp, u32 cr3);
-extern void user_return(int code) __attribute__((noreturn));
+extern void switch_to(u32 *save_esp, u32 new_esp, u32 new_cr3);
+extern void task_start(void);
 extern u32  exc_table[32];
 extern void syscall_stub(void);
 
@@ -93,6 +115,8 @@ static void gdt_set(int i, u32 base, u32 limit, u8 access, u8 gran)
 
 static void gdt_init(void)
 {
+    tasks[0].state = T_READY;
+    tasks[0].name[0] = 'k'; tasks[0].name[1] = 0;
     gdt_set(0, 0, 0, 0, 0);
     gdt_set(1, 0, 0xFFFFF, 0x9A, 0xC0);             /* 0x08: código del kernel */
     gdt_set(2, 0, 0xFFFFF, 0x92, 0xC0);             /* 0x10: datos del kernel */
@@ -138,7 +162,7 @@ static void paging_init(void)
 }
 
 /* Memoria física de la página de usuario 'va' del programa, o 0 si no existe */
-static u32 vm_phys(const struct proc *p, u32 va)
+static u32 vm_phys(const struct task *p, u32 va)
 {
     if (va < USER_BASE || va >= USER_END) return 0;
     u32 e = ((volatile u32 *)p->pt)[(va - USER_BASE) >> 12];
@@ -146,7 +170,7 @@ static u32 vm_phys(const struct proc *p, u32 va)
 }
 
 /* Se asegura de que la página que contiene 'va' exista (nueva y a cero si hace falta) */
-static int vm_map(struct proc *p, u32 va)
+static int vm_map(struct task *p, u32 va)
 {
     if (vm_phys(p, va)) return 1;
     u32 pg = pmm_alloc_page();
@@ -156,7 +180,7 @@ static int vm_map(struct proc *p, u32 va)
     return 1;
 }
 
-static void vm_free(struct proc *p)
+static void vm_free(struct task *p)
 {
     if (p->pt) {
         for (u32 i = 0; i < 1024; i++) {
@@ -178,6 +202,125 @@ static int user_range_ok(u32 ptr, u32 len)
     return 1;
 }
 
+static void proc_fault_print(const struct task *t);
+
+/* ---------- Planificador ---------- */
+
+static void sched_switch_to(u32 next)
+{
+    u32 prev = cur_t;
+    cur_t = next;
+    proc_cur = next ? &tasks[next] : 0;
+    if (next) tss[1] = tasks[next].kstack + KSTACK_PAGES * PAGE_SIZE;     /* pila que usará al volver del anillo 3 */
+    switch_to(&tasks[prev].esp, tasks[next].esp, next ? tasks[next].pd : kernel_cr3);
+}
+
+/* Elige el siguiente proceso listo (por turnos) y cambia a él. Siempre con las interrupciones desactivadas. */
+static void schedule(void)
+{
+    for (u32 i = 1; i <= MAX_TASKS; i++) {
+        u32 n = (cur_t + i) % MAX_TASKS;
+        struct task *t = &tasks[n];
+        if (t->state == T_SLEEP && (s32)(ticks - t->wake) >= 0) t->state = T_READY;
+        if (t->state == T_READY && n != cur_t) { sched_switch_to(n); return; }
+    }
+}
+
+/* La llama irq0_stub (boot.asm) 100 veces por segundo */
+struct irq_frame { u32 es, ds, edi, esi, ebp, esp_d, ebx, edx, ecx, eax, eip, cs, eflags; };
+
+void timer_irq(struct irq_frame *f)
+{
+    ticks++;
+    outb(0x20, 0x20);                               /* fin de interrupción para el PIC */
+    if ((f->cs & 3) == 3) schedule();               /* solo se quita el procesador a quien está en modo usuario */
+}
+
+/* Para el kernel (proceso 0), cuando no tiene nada que hacer: si hay programas listos les deja su turno;
+ * si no, duerme hasta la siguiente interrupción. */
+static void sched_idle(void)
+{
+    int ready = 0;
+    for (u32 i = 1; i < MAX_TASKS; i++)
+        if (tasks[i].state == T_READY || (tasks[i].state == T_SLEEP && (s32)(ticks - tasks[i].wake) >= 0)) ready = 1;
+    if (!ready) { __asm__ volatile ("hlt"); return; }
+    irq_off();
+    schedule();
+    irq_on();
+}
+
+static void task_free(struct task *t)
+{
+    vm_free(t);
+    if (t->kstack) { for (u32 i = 0; i < KSTACK_PAGES; i++) pmm_free_page(t->kstack + i * PAGE_SIZE); }
+    t->kstack = 0;
+    t->state = T_FREE;
+}
+
+/* Recoge los procesos terminados: libera su memoria y avisa en el terminal. Solo la llama el kernel (proceso 0). */
+static void sched_reap(void)
+{
+    for (u32 i = 1; i < MAX_TASKS; i++) {
+        struct task *t = &tasks[i];
+        if (t->state != T_ZOMBIE) continue;
+        con_print("[pid ", ATTR_SOFT); put_num(t->pid, ATTR_SOFT);
+        if (t->killed) {
+            con_print("] detenido por el usuario\n", ATTR_SOFT);
+        } else if (t->faulted) {
+            con_print("] detenido por el sistema: ", ATTR_SOFT);
+            proc_fault_print(t);
+            con_putc('\n', ATTR_NORMAL);
+        } else {
+            con_print("] terminó con código ", ATTR_SOFT); put_num((u32)t->code, ATTR_SOFT);
+            con_putc('\n', ATTR_NORMAL);
+        }
+        task_free(t);
+    }
+}
+
+/* Quita un proceso del medio: 'matar'. Nunca es el que se está ejecutando (lo llama el kernel). */
+static int proc_kill(u32 pid)
+{
+    for (u32 i = 1; i < MAX_TASKS; i++)
+        if (tasks[i].state != T_FREE && tasks[i].state != T_ZOMBIE && tasks[i].pid == pid) {
+            tasks[i].killed = 1;
+            irq_off();
+            tasks[i].state = T_ZOMBIE;
+            irq_on();
+            return 1;
+        }
+    return 0;
+}
+
+static void proc_list(void)
+{
+    int any = 0;
+    con_print("  PID  estado     tiempo  programa\n", ATTR_SOFT);
+    for (u32 i = 1; i < MAX_TASKS; i++) {
+        struct task *t = &tasks[i];
+        if (t->state == T_FREE) continue;
+        any = 1;
+        con_print("  ", ATTR_NORMAL);
+        if (t->pid < 10) con_putc(' ', ATTR_NORMAL);
+        if (t->pid < 100) con_putc(' ', ATTR_NORMAL);
+        put_num(t->pid, ATTR_NORMAL);
+        con_print(t->state == T_READY ? "  activo     " : t->state == T_SLEEP ? "  dormido    " : "  terminando ", ATTR_NORMAL);
+        put_num((ticks - t->start) / 100, ATTR_NORMAL);
+        con_print(" s  ", ATTR_NORMAL);
+        con_print(t->name, ATTR_NORMAL);
+        con_putc('\n', ATTR_NORMAL);
+    }
+    if (!any) con_print("  (no hay programas en ejecución)\n", ATTR_SOFT);
+}
+
+/* El proceso actual deja de existir (salió o falló). No vuelve nunca. */
+static void task_die(void)
+{
+    proc_cur->state = T_ZOMBIE;
+    schedule();
+    for (;;) __asm__ volatile ("hlt");
+}
+
 /* ---------- Excepciones y llamadas al sistema ---------- */
 
 /* La llama exc_common (boot.asm) cuando el procesador detecta un fallo */
@@ -186,11 +329,11 @@ void exception_handler(struct exc_frame *f)
     u32 cr2;
     __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
     if ((f->cs & 3) == 3 && proc_cur) {
-        proc_faulted = 1;
-        proc_fault_vec = f->vec;
-        proc_fault_addr = cr2;
-        proc_fault_eip = f->eip;
-        user_return(-1);
+        proc_cur->faulted = 1;
+        proc_cur->fvec = f->vec;
+        proc_cur->faddr = cr2;
+        proc_cur->feip = f->eip;
+        task_die();
     }
     con_print("\n*** ERROR DEL KERNEL: excepción ", ATTR_PROMPT);
     put_num(f->vec, ATTR_PROMPT);
@@ -208,7 +351,9 @@ void syscall_handler(struct exc_frame *f)
 {
     switch (f->eax) {
     case 1:
-        user_return((int)f->ebx);
+        proc_cur->code = (int)f->ebx;
+        task_die();
+        break;
     case 2: {
         u32 p = f->ebx, n = f->ecx;
         char buf[256];
@@ -224,16 +369,16 @@ void syscall_handler(struct exc_frame *f)
         f->eax = ticks;
         break;
     case 4: {
-        u32 t0 = ticks, n = f->ebx;
+        u32 n = f->ebx;
         if (n > 6000) n = 6000;
-        irq_on();
-        while (ticks - t0 < n) __asm__ volatile ("hlt");
-        irq_off();
+        proc_cur->wake = ticks + n;
+        proc_cur->state = T_SLEEP;
+        schedule();                                 /* vuelve cuando se cumple el tiempo */
         f->eax = 0;
         break;
     }
     case 5:
-        f->eax = proc_cur ? proc_cur->pid : 0;
+        f->eax = proc_cur->pid;
         break;
     default:
         f->eax = (u32)-1;
@@ -242,71 +387,89 @@ void syscall_handler(struct exc_frame *f)
 
 /* ---------- Lanzar un programa ---------- */
 
-/* Carga el ELF 'img' en un espacio nuevo y lo ejecuta hasta que termine o falle.
- * Devuelve 1 si llegó a ejecutarse (código de salida en *code; mira proc_faulted), o 0 si no pudo
- * (el motivo queda en proc_err). */
-static int proc_exec(const char *name, const u8 *img, u32 len, int *code)
+/* Carga el ELF 'img' en un espacio nuevo y lo deja listo para ejecutarse en segundo plano.
+ * Devuelve su pid, o 0 si no pudo (el motivo queda en proc_err). */
+static u32 proc_spawn(const char *name, const u8 *img, u32 len)
 {
-    struct proc p;
     struct elf_seg seg[ELF_MAX_SEGS];
-    u32 entry, n;
-    (void)name;
-    p.pid = 0; p.pd = 0; p.pt = 0;
-    proc_faulted = 0;
+    u32 entry, n, slot = 0;
 
     if (!paging_ok) { proc_err = "este procesador no tiene paginación de 4 MiB"; return 0; }
     int e = elf_parse(img, len, USER_BASE, USER_STACK_BOTTOM, &entry, seg, ELF_MAX_SEGS, &n);
     if (e) { proc_err = elf_err_text(e); return 0; }
+    for (u32 i = 1; i < MAX_TASKS; i++) if (tasks[i].state == T_FREE) { slot = i; break; }
+    if (!slot) { proc_err = "demasiados programas a la vez (usa 'ps' y 'matar')"; return 0; }
 
-    p.pd = pmm_alloc_page();
-    p.pt = pmm_alloc_page();
-    if (!p.pd || !p.pt) { vm_free(&p); proc_err = "no queda memoria"; return 0; }
-    zero_page(p.pd);
-    zero_page(p.pt);
+    struct task *p = &tasks[slot];
+    p->pd = p->pt = p->kstack = 0;
+    p->pt = pmm_alloc_page();
+    p->pd = pmm_alloc_page();
+    p->kstack = pmm_alloc_run(KSTACK_PAGES);
+    if (!p->pd || !p->pt || !p->kstack) goto nomem;
+    zero_page(p->pd);
+    zero_page(p->pt);
     for (u32 i = 0; i < 1024; i++)                  /* el kernel se ve igual en todos los espacios */
-        if (i < 256 || i >= 512) ((u32 *)p.pd)[i] = kernel_pd[i];
-    ((u32 *)p.pd)[256] = p.pt | 7;                  /* 0x40000000-0x403FFFFF: zona del programa */
+        if (i < 256 || i >= 512) ((u32 *)p->pd)[i] = kernel_pd[i];
+    ((u32 *)p->pd)[256] = p->pt | 7;                /* 0x40000000-0x403FFFFF: zona del programa */
 
     for (u32 s = 0; s < n; s++) {
         for (u32 a = seg[s].vaddr & ~0xFFFu; a < seg[s].vaddr + seg[s].memsz; a += PAGE_SIZE)
-            if (!vm_map(&p, a)) { vm_free(&p); proc_err = "no queda memoria"; return 0; }
+            if (!vm_map(p, a)) goto nomem;
         for (u32 k = 0; k < seg[s].filesz; k++) {
             u32 va = seg[s].vaddr + k;
-            ((u8 *)(vm_phys(&p, va) + (va & 0xFFF)))[0] = img[seg[s].off + k];
+            ((u8 *)(vm_phys(p, va) + (va & 0xFFF)))[0] = img[seg[s].off + k];
         }
     }
     for (u32 a = USER_STACK_BOTTOM; a < USER_END; a += PAGE_SIZE)
-        if (!vm_map(&p, a)) { vm_free(&p); proc_err = "no queda memoria"; return 0; }
+        if (!vm_map(p, a)) goto nomem;
 
-    p.pid = next_pid++;
-    proc_last_pid = p.pid;
-    proc_cur = &p;
-    *code = run_user(entry, USER_END - 16, p.pd);
-    proc_cur = 0;
-    vm_free(&p);
-    return 1;
+    {   /* pila de kernel inicial: switch_to "vuelve" a task_start, que salta al anillo 3 */
+        u32 *sp = (u32 *)(p->kstack + KSTACK_PAGES * PAGE_SIZE);
+        *--sp = USER_END - 16;                      /* esp de usuario */
+        *--sp = entry;                              /* eip de usuario */
+        *--sp = (u32)task_start;
+        *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; /* ebp, ebx, esi, edi */
+        p->esp = (u32)sp;
+    }
+    p->pid = next_pid++;
+    p->code = 0; p->faulted = 0; p->killed = 0;
+    p->start = ticks;
+    {
+        u32 i = 0;
+        while (name[i] && name[i] != '.' && i < sizeof(p->name) - 1) { p->name[i] = name[i]; i++; }
+        p->name[i] = 0;
+    }
+    irq_off();
+    p->state = T_READY;
+    irq_on();
+    return p->pid;
+
+nomem:
+    task_free(p);
+    proc_err = "no queda memoria";
+    return 0;
 }
 
 #endif /* LIRIO_HOST */
 
 /* Explica por qué se detuvo el programa */
-static void proc_fault_print(void)
+static void proc_fault_print(const struct task *t)
 {
-    switch (proc_fault_vec) {
+    switch (t->fvec) {
     case 0:  con_print("división entre cero", ATTR_NORMAL); break;
     case 6:  con_print("instrucción no válida", ATTR_NORMAL); break;
     case 13: con_print("violación de protección", ATTR_NORMAL); break;
     case 14:
         con_print("acceso no permitido a la memoria (dirección ", ATTR_NORMAL);
-        put_hex32(proc_fault_addr, ATTR_NORMAL);
+        put_hex32(t->faddr, ATTR_NORMAL);
         con_print(")", ATTR_NORMAL);
         break;
     default:
         con_print("excepción ", ATTR_NORMAL);
-        put_num(proc_fault_vec, ATTR_NORMAL);
+        put_num(t->fvec, ATTR_NORMAL);
     }
     con_print(" en eip ", ATTR_NORMAL);
-    put_hex32(proc_fault_eip, ATTR_NORMAL);
+    put_hex32(t->feip, ATTR_NORMAL);
 }
 
 #endif

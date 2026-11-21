@@ -1,7 +1,7 @@
 CC      = gcc
 AS      = nasm
 LD      = ld
-CFLAGS  = -m32 -ffreestanding -fno-stack-protector -fno-pic -fno-pie -fno-builtin -fno-tree-loop-distribute-patterns -O2 -Wall -Wextra -nostdlib
+CFLAGS  = -m32 -ffreestanding -fno-stack-protector -mno-sse -mno-mmx -fno-pic -fno-pie -fno-builtin -fno-tree-loop-distribute-patterns -O2 -Wall -Wextra -nostdlib
 LDFLAGS = -m elf_i386 -T linker.ld -nostdlib
 
 all: lirioos-kernel.bin

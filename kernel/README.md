@@ -63,16 +63,24 @@ Kernel propio, escrito en C y ensamblador para x86 de 32 bits. Arranca con GRUB 
 | `font.h` | Fuente 8x16 Latin-1 generada a partir de DejaVu Sans Mono (licencia libre) |
 | `gui_preview.c` | Genera una imagen del escritorio en un PC normal |
 
-## Programas y modo usuario (0.12)
+## Programas, modo usuario y multitarea (0.13)
 
 El kernel ya puede ejecutar programas **fuera del kernel**, en el anillo 3 del procesador. Cada programa recibe su propia memoria privada (0x40000000-0x403FFFFF) mediante paginación y no puede leer ni escribir la del kernel: si lo intenta, el procesador lanza una excepción y el kernel lo detiene sin caerse (`ejecutar falla` lo demuestra). Los programas son ejecutables **ELF de 32 bits**, el mismo formato que usa Linux.
 
-- `programas` lista los programas incluidos (`hola` y `falla`, código en `user/`).
+- `programas` lista los programas incluidos (`hola`, `falla`, `contar` y `bucle`, código en `user/`).
 - `ejecutar hola` ejecuta uno incluido; `ejecutar disco/hola.elf` carga un `.elf` de la carpeta `disco`.
 - Llamadas al sistema (`int 0x80`, número en `eax`, argumentos en `ebx`/`ecx`): 1 `salir`, 2 `escribir`, 3 `ticks`, 4 `dormir`, 5 `pid`. Los programas se escriben sin libc con `user/lirio.h`; mira `user/hola.c`.
 - Para crear uno nuevo: añade `user/miprograma.c`, ejecuta `make progs` dentro de `kernel/` y vuelve a compilar el kernel.
 
-Límites de esta primera versión: se ejecuta **un programa a la vez hasta que termina** (la pantalla no responde mientras tanto; la multitarea con el temporizador es el siguiente paso), solo se usa el primer GiB de RAM y los programas son estáticos (sin librerías dinámicas). Esto no es todavía compatibilidad con Linux ni con `.exe`: los programas tienen que estar hechos para las llamadas de LirioOS.
+**Multitarea:** `ejecutar` lanza el programa **en segundo plano** y el terminal queda libre. Se pueden tener hasta 7 a la vez. El temporizador (100 veces por segundo) reparte el procesador por turnos entre los programas y el escritorio (que es el proceso 0), así que un programa que no para nunca (`ejecutar bucle`) no congela nada. `ps` lista los programas en marcha y `matar <pid>` detiene uno. Mientras un programa está dentro del kernel (una llamada al sistema) no se le quita el procesador, así los datos del kernel no se corrompen; al dormirse (`dormir`) sí cede el turno. `ejecutar contar` dos veces muestra dos contadores mezclados.
+
+![Captura real: bucle, dos contadores y el escritorio funcionando a la vez](../capturas/multi1.png)
+
+![Captura real: el ratón y el teclado siguen respondiendo mientras bucle da vueltas](../capturas/multi2.png)
+
+![Captura real: matar detiene el programa](../capturas/multi3.png)
+
+Límites: solo se usa el primer GiB de RAM y los programas son estáticos (sin librerías dinámicas). Esto no es todavía compatibilidad con Linux ni con `.exe`: los programas tienen que estar hechos para las llamadas de LirioOS.
 
 ## Compilar y probar
 
@@ -91,5 +99,5 @@ Para probar el disco: en Almacenamiento añade un **disco duro** nuevo (VDI, uno
 ## Hoja de ruta
 
 1. Más aplicaciones reales (el explorador, el visor de imágenes y el editor ya existen): reproductor, ajustes.
-2. Multitarea: varios procesos a la vez con el temporizador (los procesos básicos y el modo usuario ya existen).
+2. Más llamadas al sistema (leer del teclado y de archivos, pedir memoria) para que los programas sean útiles de verdad, y más adelante ventanas para programas.
 3. Más adelante, y mucho más grande: red, audio, USB (cámara), un navegador y compatibilidad con programas de Linux.
