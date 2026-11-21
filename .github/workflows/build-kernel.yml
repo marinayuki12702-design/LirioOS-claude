@@ -204,6 +204,41 @@ jobs:
           fsck.vfat -n blanco.img
           python3 ../tools/check_fat32.py blanco.img -t
 
+      - name: Ejecutar programas en modo usuario
+        working-directory: kernel
+        run: |
+          make -C ../user
+          truncate -s 64M progs.img
+          mkfs.vfat -F 32 -s 1 -n PROGS progs.img
+          mcopy -i progs.img ../user/hola.elf ::HOLA.ELF
+          mcopy -i progs.img ../user/falla.elf ::FALLA.ELF
+          echo "esto no es un programa" > malo.txt
+          mcopy -i progs.img malo.txt ::MALO.ELF
+          (
+            sleep 12
+            for k in p r o g r a m a s ret; do echo "sendkey $k"; sleep 0.3; done
+            for k in e j e c u t a r spc h o l a ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 4
+            for k in e j e c u t a r spc f a l l a ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 2
+            echo "screendump /tmp/procesos.ppm"
+            sleep 1
+            for k in l i m p i a r ret; do echo "sendkey $k"; sleep 0.3; done
+            for k in e j e c u t a r spc d i s c o shift-7 h o l a dot e l f ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 4
+            for k in e j e c u t a r spc d i s c o shift-7 m a l o dot e l f ret; do echo "sendkey $k"; sleep 0.3; done
+            for k in e j e c u t a r spc d i s c o shift-7 f a l l a dot e l f ret; do echo "sendkey $k"; sleep 0.3; done
+            for k in e j e c u t a r spc n a d a ret; do echo "sendkey $k"; sleep 0.3; done
+            for k in e j e c u t a r spc h o l a ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 4
+            echo "screendump /tmp/procesos2.ppm"
+            sleep 1
+            echo "quit"
+          ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -boot d -hda progs.img -m 256 -vga std -display none -monitor stdio -no-reboot
+          convert /tmp/procesos.ppm ../capturas/procesos.png
+          convert /tmp/procesos2.ppm ../capturas/procesos2.png
+          fsck.vfat -n progs.img
+
       - name: Guardar las capturas en el repositorio
         if: always() && github.ref == 'refs/heads/main'
         run: |

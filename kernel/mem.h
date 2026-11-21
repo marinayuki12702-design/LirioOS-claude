@@ -8,6 +8,7 @@
 
 #define PAGE_SIZE   4096u
 #define PMM_PAGES   (1u << 20)                 /* 4 GiB de direcciones, 1 M de páginas */
+#define PMM_LIMIT   (1u << 18)                 /* solo se usa el primer GiB: lo de encima es de los programas y de los dispositivos */
 
 /* ---------- Mapa de memoria de Multiboot ---------- */
 
@@ -112,8 +113,8 @@ static void mem_init(int has_mmap, u32 mmap_addr, u32 mmap_len, u32 upper_kb, u3
             if (e->type != 1) continue;
             u32 first = (start + PAGE_SIZE - 1) / PAGE_SIZE;         /* solo páginas enteras */
             u32 last_excl = (start + len) / PAGE_SIZE;
-            if (start + len < start) last_excl = PMM_PAGES;
-            for (u32 p = first; p < last_excl && p < PMM_PAGES; p++) {
+            if (start + len < start) last_excl = PMM_LIMIT;
+            for (u32 p = first; p < last_excl && p < PMM_LIMIT; p++) {
                 if (pmm_used(p)) { pmm_bits[p >> 5] &= ~(1u << (p & 31)); pmm_free++; pmm_total++; }
             }
         }
@@ -123,7 +124,7 @@ static void mem_init(int has_mmap, u32 mmap_addr, u32 mmap_len, u32 upper_kb, u3
         mem_regions[0].end = 0x100000 + upper_kb * 1024u - 1;
         mem_regions[0].type = 1;
         mem_region_n = 1;
-        for (u32 p = first; p < last_excl && p < PMM_PAGES; p++) {
+        for (u32 p = first; p < last_excl && p < PMM_LIMIT; p++) {
             pmm_bits[p >> 5] &= ~(1u << (p & 31));
             pmm_free++;
             pmm_total++;

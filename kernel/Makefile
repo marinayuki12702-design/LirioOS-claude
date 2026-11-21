@@ -9,7 +9,7 @@ all: lirioos-kernel.bin
 boot.o: boot.asm
 	$(AS) -f elf32 boot.asm -o boot.o
 
-kernel.o: kernel.c gui.h font.h fs.h images.h io.h mem.h ata.h fat.h
+kernel.o: kernel.c gui.h font.h fs.h images.h io.h mem.h ata.h fat.h proc.h elf.h progs.h
 	$(CC) $(CFLAGS) -c kernel.c -o kernel.o
 
 lirioos-kernel.bin: boot.o kernel.o linker.ld gui.h font.h
@@ -25,6 +25,11 @@ iso: lirioos-kernel.bin
 # Prueba rápida si tienes QEMU instalado
 run: iso
 	qemu-system-i386 -cdrom LirioOS-kernel.iso
+
+# Recompila los programas de usuario (../user) y los vuelve a incluir en el kernel (progs.h)
+progs:
+	$(MAKE) -C ../user
+	cd .. && python3 tools/embed.py
 
 clean:
 	rm -rf *.o *.bin iso *.iso

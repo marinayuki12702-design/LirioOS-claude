@@ -1,6 +1,7 @@
 /* Kernel de LirioOS: modo gráfico, teclado español, sistema de archivos en memoria y terminal en ventana. */
 
 #include "gui.h"
+#include "progs.h"
 
 /* ---------- Teclado español (consulta directa, juego de códigos 1) ---------- */
 
@@ -400,7 +401,7 @@ static void banner(void)
     con_print(" | |   | | '__| |/ _ \\  | | | \\___ \\ \n", ATTR_PROMPT);
     con_print(" | |___| | |  | | (_) | | |_| |___) |\n", ATTR_PROMPT);
     con_print(" |_____|_|_|  |_|\\___/   \\___/|____/ \n\n", ATTR_PROMPT);
-    con_print("LirioOS kernel 0.11 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
+    con_print("LirioOS kernel 0.12 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
 }
 
 /* Escribe 'v' como 8 cifras hexadecimales */
@@ -509,6 +510,8 @@ static void cmd_disk_edit(const char *cmd, const char *arg)
     }
 }
 
+#include "proc.h"
+
 /* ---------- Interrupciones y temporizador ---------- */
 
 struct idt_entry {
@@ -538,20 +541,26 @@ void timer_irq(void)
     outb(0x20, 0x20);                               /* fin de interrupción para el PIC */
 }
 
+static u16 idt_cs;
+
+static void idt_set(u32 vec, void (*handler)(void), u8 flags)
+{
+    u32 h = (u32)handler;
+    idt[vec].off_lo = (u16)(h & 0xFFFF);
+    idt[vec].sel = idt_cs;
+    idt[vec].zero = 0;
+    idt[vec].flags = flags;
+    idt[vec].off_hi = (u16)(h >> 16);
+}
+
 static void interrupts_init(void)
 {
-    u16 cs;
-    __asm__ volatile ("mov %%cs, %0" : "=r"(cs));
-    u32 h = (u32)irq0_stub;
-    idt[0x20].off_lo = (u16)(h & 0xFFFF);
-    idt[0x20].sel = cs;
-    idt[0x20].zero = 0;
-    idt[0x20].flags = 0x8E;                         /* presente, anillo 0, puerta de interrupción de 32 bits */
-    idt[0x20].off_hi = (u16)(h >> 16);
-
-    u32 h1 = (u32)irq1_stub, h12 = (u32)irq12_stub;
-    idt[0x21].off_lo = (u16)(h1 & 0xFFFF);  idt[0x21].sel = cs;  idt[0x21].flags = 0x8E;  idt[0x21].off_hi = (u16)(h1 >> 16);
-    idt[0x2C].off_lo = (u16)(h12 & 0xFFFF); idt[0x2C].sel = cs;  idt[0x2C].flags = 0x8E;  idt[0x2C].off_hi = (u16)(h12 >> 16);
+    __asm__ volatile ("mov %%cs, %0" : "=r"(idt_cs));
+    idt_set(0x20, irq0_stub, 0x8E);                 /* presente, anillo 0, puerta de interrupción de 32 bits */
+    idt_set(0x21, irq1_stub, 0x8E);
+    idt_set(0x2C, irq12_stub, 0x8E);
+    for (u32 v = 0; v < 32; v++) idt_set(v, (void (*)(void))exc_table[v], 0x8E);    /* excepciones del procesador */
+    idt_set(0x80, syscall_stub, 0xEE);              /* llamadas al sistema: el anillo 3 puede usarla */
 
     struct idt_ptr p = { (u16)(sizeof(idt) - 1), (u32)idt };
     idt_load(&p);
@@ -571,9 +580,81 @@ static void interrupts_init(void)
     irq_on();
 }
 
+/* ---------- Programas de usuario ---------- */
+
+static void cmd_programas(void)
+{
+    con_print("Programas incluidos en el sistema (se ejecutan con 'ejecutar <nombre>'):\n", ATTR_SOFT);
+    for (u32 i = 0; i < BUILTIN_PROGS_COUNT; i++) {
+        con_print("  ", ATTR_NORMAL);
+        con_print(builtin_progs[i].name, ATTR_NORMAL);
+        con_print("  (", ATTR_SOFT);
+        put_size(builtin_progs[i].len / 1024 + 1, ATTR_SOFT);
+        con_print(")\n", ATTR_SOFT);
+    }
+    con_print("También puedes ejecutar un archivo .elf de la carpeta 'disco'.\n", ATTR_SOFT);
+}
+
+#define PROG_MAX (256u * 1024u)
+
+static void cmd_ejecutar(const char *arg)
+{
+    const u8 *img = 0;
+    u8 *buf = 0;
+    u32 len = 0;
+    char path[PATH_MAX];
+
+    if (arg[0] == 0) { con_print("uso: ejecutar <programa>   (mira 'programas')\n", ATTR_NORMAL); return; }
+
+    for (u32 i = 0; i < BUILTIN_PROGS_COUNT && !img; i++) {
+        const char *nm = builtin_progs[i].name;
+        u32 k = 0;
+        while (nm[k] && arg[k] == nm[k]) k++;
+        if (nm[k] == 0 && (arg[k] == 0 || (arg[k] == '.' && arg[k + 1] == 'e' && arg[k + 2] == 'l' && arg[k + 3] == 'f' && arg[k + 4] == 0))) {
+            img = builtin_progs[i].data;
+            len = builtin_progs[i].len;
+        }
+    }
+    if (!img) {
+        if (!path_resolve(arg, path)) { con_print("ejecutar: ruta demasiado larga\n", ATTR_NORMAL); return; }
+        if (!is_disk(path)) {
+            con_print("ejecutar: no existe ese programa (mira 'programas' o usa un .elf de 'disco')\n", ATTR_NORMAL);
+            return;
+        }
+        buf = (u8 *)kmalloc(PROG_MAX);
+        if (!buf) { con_print("ejecutar: no hay memoria\n", ATTR_NORMAL); return; }
+        if (!fat_read_file(disk_rel(path), buf, PROG_MAX, &len)) {
+            kfree(buf);
+            con_print("ejecutar: no existe: ", ATTR_NORMAL);
+            put_latin1(arg, ATTR_NORMAL);
+            con_putc('\n', ATTR_NORMAL);
+            return;
+        }
+        img = buf;
+    }
+
+    int code = 0;
+    int ran = proc_exec(arg, img, len, &code);
+    if (buf) kfree(buf);
+    if (!ran) {
+        con_print("ejecutar: ", ATTR_NORMAL);
+        con_print(proc_err, ATTR_NORMAL);
+        con_putc('\n', ATTR_NORMAL);
+    } else if (proc_faulted) {
+        con_print("[pid ", ATTR_SOFT); put_num(proc_last_pid, ATTR_SOFT);
+        con_print("] detenido por el sistema: ", ATTR_SOFT);
+        proc_fault_print();
+        con_putc('\n', ATTR_NORMAL);
+    } else {
+        con_print("[pid ", ATTR_SOFT); put_num(proc_last_pid, ATTR_SOFT);
+        con_print("] terminó con código ", ATTR_SOFT); put_num((u32)code, ATTR_SOFT);
+        con_putc('\n', ATTR_NORMAL);
+    }
+}
+
 static const char *const known_cmds[] = {
     "ayuda", "help", "ls", "cd", "pwd", "cat", "echo", "limpiar", "clear", "about", "uname",
-    "whoami", "date", "fecha", "uptime", "mem", "disco", "formatear", "rm", "mkdir", "reiniciar", "reboot", "apagar", "halt",
+    "whoami", "date", "fecha", "uptime", "mem", "disco", "formatear", "rm", "mkdir", "ejecutar", "programas", "reiniciar", "reboot", "apagar", "halt",
 };
 #define KNOWN_COUNT (sizeof(known_cmds) / sizeof(known_cmds[0]))
 
@@ -637,6 +718,8 @@ static void run_command(const char *line)
         con_print("  formatear si    deja el disco como FAT32 vacío (borra todo)\n", ATTR_NORMAL);
         con_print("  mkdir <ruta>    crea una carpeta (solo dentro de 'disco')\n", ATTR_NORMAL);
         con_print("  rm <ruta>       borra un archivo o una carpeta vacía (solo en 'disco')\n", ATTR_NORMAL);
+        con_print("  programas       lista los programas incluidos en el sistema\n", ATTR_NORMAL);
+        con_print("  ejecutar <prog> ejecuta un programa (uno incluido o un .elf del disco)\n", ATTR_NORMAL);
         con_print("  whoami, uname   quién eres y qué sistema es este\n", ATTR_NORMAL);
         con_print("  limpiar         borra la pantalla\n", ATTR_NORMAL);
         con_print("  reiniciar, apagar\n", ATTR_NORMAL);
@@ -696,6 +779,10 @@ static void run_command(const char *line)
         con_putc('\n', ATTR_NORMAL);
     } else if (str_eq(cmd, "date") || str_eq(cmd, "fecha")) {
         cmd_date();
+    } else if (str_eq(cmd, "programas")) {
+        cmd_programas();
+    } else if (str_eq(cmd, "ejecutar")) {
+        cmd_ejecutar(arg);
     } else if (str_eq(cmd, "mem")) {
         cmd_mem();
     } else if (str_eq(cmd, "disco")) {
@@ -716,11 +803,11 @@ static void run_command(const char *line)
     } else if (str_eq(cmd, "whoami")) {
         con_print("lirio\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "uname")) {
-        con_print("LirioOS 0.11 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
+        con_print("LirioOS 0.12 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "clear") || str_eq(cmd, "limpiar")) {
         con_clear();
     } else if (str_eq(cmd, "about")) {
-        con_print("LirioOS 0.11 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
+        con_print("LirioOS 0.12 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "reboot") || str_eq(cmd, "reiniciar")) {
         outb(0x64, 0xFE);
     } else if (str_eq(cmd, "halt") || str_eq(cmd, "apagar")) {
@@ -848,6 +935,8 @@ void kmain(u32 magic, u32 info)
     mouse_init();
     banner();
     print_video_info(mb);
+    gdt_init();
+    paging_init();
     interrupts_init();
 
     fat_clock = fat_stamp;

@@ -74,4 +74,150 @@ irq12_stub:
     popad
     iret
 
+; ---------- Modo usuario: GDT, TSS, excepciones y llamadas al sistema ----------
+
+; Carga la GDT que prepara el kernel en C y recarga los registros de segmento
+global gdt_flush
+gdt_flush:
+    mov eax, [esp + 4]
+    lgdt [eax]
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    jmp 0x08:.reload
+.reload:
+    ret
+
+; Carga el registro de tarea (TSS): dice al procesador qué pila usar al pasar de modo usuario a kernel
+global tss_flush
+tss_flush:
+    mov ax, 0x28
+    ltr ax
+    ret
+
+; Excepciones del procesador 0-31. Las que no traen código de error meten un 0 para que todas dejen la misma pila.
+%macro EXC_NOERR 1
+exc%1:
+    push dword 0
+    push dword %1
+    jmp exc_common
+%endmacro
+%macro EXC_ERR 1
+exc%1:
+    push dword %1
+    jmp exc_common
+%endmacro
+
+%assign i 0
+%rep 32
+  %if i == 8 || i == 10 || i == 11 || i == 12 || i == 13 || i == 14 || i == 17 || i == 21 || i == 30
+    EXC_ERR %[i]
+  %else
+    EXC_NOERR %[i]
+  %endif
+  %assign i i+1
+%endrep
+
+extern exception_handler
+exc_common:
+    pushad
+    push ds
+    push es
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    cld
+    push esp
+    call exception_handler
+    add esp, 4
+    pop es
+    pop ds
+    popad
+    add esp, 8
+    iret
+
+section .data
+global exc_table
+exc_table:
+%assign i 0
+%rep 32
+    dd exc %+ i
+%assign i i+1
+%endrep
+
+section .text
+
+; int 0x80: llamadas al sistema desde modo usuario
+global syscall_stub
+extern syscall_handler
+syscall_stub:
+    push dword 0
+    push dword 0x80
+    pushad
+    push ds
+    push es
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    cld
+    push esp
+    call syscall_handler
+    add esp, 4
+    pop es
+    pop ds
+    popad
+    add esp, 8
+    iret
+
+; int run_user(u32 entrada, u32 pila, u32 cr3): salta al anillo 3 y no vuelve hasta que el programa
+; termine (user_return) o falle. Devuelve el código de salida.
+global run_user
+extern kernel_cr3
+run_user:
+    push ebp
+    push ebx
+    push esi
+    push edi
+    mov [kernel_resume_esp], esp
+    mov eax, [esp + 20]
+    mov ecx, [esp + 24]
+    mov edx, [esp + 28]
+    mov cr3, edx
+    mov bx, 0x23
+    mov ds, bx
+    mov es, bx
+    mov fs, bx
+    mov gs, bx
+    push dword 0x23         ; ss
+    push ecx                ; esp del programa
+    push dword 0x202        ; eflags con las interrupciones activas
+    push dword 0x1B         ; cs de usuario
+    push eax                ; eip
+    iret
+
+; void user_return(int codigo): abandona el programa y vuelve a quien llamó a run_user
+global user_return
+user_return:
+    mov eax, [esp + 4]
+    mov esp, [kernel_resume_esp]
+    mov edx, [kernel_cr3]
+    mov cr3, edx
+    mov cx, 0x10
+    mov ds, cx
+    mov es, cx
+    mov fs, cx
+    mov gs, cx
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    sti
+    ret
+
+section .bss
+kernel_resume_esp: resd 1
+
 section .note.GNU-stack noalloc noexec nowrite progbits

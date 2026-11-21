@@ -20,6 +20,10 @@ Kernel propio, escrito en C y ensamblador para x86 de 32 bits. Arranca con GRUB 
 
 ![Captura real: un disco en blanco formateado como FAT32 por LirioOS](../capturas/formato.png)
 
+![Captura real: programas en modo usuario; uno termina bien y otro es detenido al tocar la memoria del kernel](../capturas/procesos.png)
+
+![Captura real: programas cargados desde el disco, un archivo que no es ELF y un programa inexistente](../capturas/procesos2.png)
+
 *Captura real del kernel arrancando en QEMU, generada automáticamente por el flujo de GitHub en cada cambio (carpeta `capturas/`).*
 
 ## Qué hace hoy
@@ -50,11 +54,25 @@ Kernel propio, escrito en C y ensamblador para x86 de 32 bits. Arranca con GRUB 
 | `io.h` | Puertos de entrada/salida del procesador |
 | `ata.h` | Controlador de disco ATA (IDE) por PIO |
 | `fat.h` | Sistema de archivos FAT32: montar, leer, escribir, carpetas, borrar y formatear |
+| `proc.h` | Modo usuario: GDT y TSS, paginación, espacios de memoria por programa, excepciones, llamadas al sistema (`int 0x80`) y lanzador de programas |
+| `elf.h` | Lector y verificador de ejecutables ELF de 32 bits |
+| `progs.h` | Programas de usuario incluidos en el kernel (generado por `tools/embed.py`) |
 | `mem.h` | Mapa de memoria, páginas físicas y montón (`kmalloc`/`kfree`) |
 | `fs.h` | Sistema de archivos en memoria (carpetas y archivos, editables, guardados en el montón) |
 | `images.h` | Imágenes de ejemplo (generado por `tools/gen_images.py`, no editar a mano) |
 | `font.h` | Fuente 8x16 Latin-1 generada a partir de DejaVu Sans Mono (licencia libre) |
 | `gui_preview.c` | Genera una imagen del escritorio en un PC normal |
+
+## Programas y modo usuario (0.12)
+
+El kernel ya puede ejecutar programas **fuera del kernel**, en el anillo 3 del procesador. Cada programa recibe su propia memoria privada (0x40000000-0x403FFFFF) mediante paginación y no puede leer ni escribir la del kernel: si lo intenta, el procesador lanza una excepción y el kernel lo detiene sin caerse (`ejecutar falla` lo demuestra). Los programas son ejecutables **ELF de 32 bits**, el mismo formato que usa Linux.
+
+- `programas` lista los programas incluidos (`hola` y `falla`, código en `user/`).
+- `ejecutar hola` ejecuta uno incluido; `ejecutar disco/hola.elf` carga un `.elf` de la carpeta `disco`.
+- Llamadas al sistema (`int 0x80`, número en `eax`, argumentos en `ebx`/`ecx`): 1 `salir`, 2 `escribir`, 3 `ticks`, 4 `dormir`, 5 `pid`. Los programas se escriben sin libc con `user/lirio.h`; mira `user/hola.c`.
+- Para crear uno nuevo: añade `user/miprograma.c`, ejecuta `make progs` dentro de `kernel/` y vuelve a compilar el kernel.
+
+Límites de esta primera versión: se ejecuta **un programa a la vez hasta que termina** (la pantalla no responde mientras tanto; la multitarea con el temporizador es el siguiente paso), solo se usa el primer GiB de RAM y los programas son estáticos (sin librerías dinámicas). Esto no es todavía compatibilidad con Linux ni con `.exe`: los programas tienen que estar hechos para las llamadas de LirioOS.
 
 ## Compilar y probar
 
@@ -73,5 +91,5 @@ Para probar el disco: en Almacenamiento añade un **disco duro** nuevo (VDI, uno
 ## Hoja de ruta
 
 1. Más aplicaciones reales (el explorador, el visor de imágenes y el editor ya existen): reproductor, ajustes.
-2. Procesos y modo usuario (y cargar programas desde el disco).
+2. Multitarea: varios procesos a la vez con el temporizador (los procesos básicos y el modo usuario ya existen).
 3. Más adelante, y mucho más grande: red, audio, USB (cámara), un navegador y compatibilidad con programas de Linux.
