@@ -63,13 +63,13 @@ Kernel propio, escrito en C y ensamblador para x86 de 32 bits. Arranca con GRUB 
 | `font.h` | Fuente 8x16 Latin-1 generada a partir de DejaVu Sans Mono (licencia libre) |
 | `gui_preview.c` | Genera una imagen del escritorio en un PC normal |
 
-## Programas, modo usuario y multitarea (0.13)
+## Programas, modo usuario y multitarea (0.14)
 
 El kernel ya puede ejecutar programas **fuera del kernel**, en el anillo 3 del procesador. Cada programa recibe su propia memoria privada (0x40000000-0x403FFFFF) mediante paginación y no puede leer ni escribir la del kernel: si lo intenta, el procesador lanza una excepción y el kernel lo detiene sin caerse (`ejecutar falla` lo demuestra). Los programas son ejecutables **ELF de 32 bits**, el mismo formato que usa Linux.
 
-- `programas` lista los programas incluidos (`hola`, `falla`, `contar` y `bucle`, código en `user/`).
+- `programas` lista los programas incluidos (`hola`, `falla`, `contar`, `bucle` y `notas`, código en `user/`).
 - `ejecutar hola` ejecuta uno incluido; `ejecutar disco/hola.elf` carga un `.elf` de la carpeta `disco`.
-- Llamadas al sistema (`int 0x80`, número en `eax`, argumentos en `ebx`/`ecx`): 1 `salir`, 2 `escribir`, 3 `ticks`, 4 `dormir`, 5 `pid`. Los programas se escriben sin libc con `user/lirio.h`; mira `user/hola.c`.
+- Llamadas al sistema (`int 0x80`, número en `eax`, argumentos en `ebx`/`ecx`/`edx`): 1 `salir`, 2 `escribir`, 3 `ticks`, 4 `dormir`, 5 `pid`, 6 `leer_tecla`, 7 `leer_archivo`, 8 `escribir_archivo`, 9 `pedir_memoria` (sbrk). Los programas se escriben sin libc con `user/lirio.h`; mira `user/hola.c`.
 - Para crear uno nuevo: añade `user/miprograma.c`, ejecuta `make progs` dentro de `kernel/` y vuelve a compilar el kernel.
 
 **Multitarea:** `ejecutar` lanza el programa **en segundo plano** y el terminal queda libre. Se pueden tener hasta 7 a la vez. El temporizador (100 veces por segundo) reparte el procesador por turnos entre los programas y el escritorio (que es el proceso 0), así que un programa que no para nunca (`ejecutar bucle`) no congela nada. `ps` lista los programas en marcha y `matar <pid>` detiene uno. Mientras un programa está dentro del kernel (una llamada al sistema) no se le quita el procesador, así los datos del kernel no se corrompen; al dormirse (`dormir`) sí cede el turno. `ejecutar contar` dos veces muestra dos contadores mezclados.
@@ -79,6 +79,10 @@ El kernel ya puede ejecutar programas **fuera del kernel**, en el anillo 3 del p
 ![Captura real: el ratón y el teclado siguen respondiendo mientras bucle da vueltas](../capturas/multi2.png)
 
 ![Captura real: matar detiene el programa](../capturas/multi3.png)
+
+**Teclado, archivos y memoria:** un programa que llama a `leer_tecla` recibe el teclado en lugar del terminal (Esc lo detiene). Puede leer y escribir archivos, también del disco, y pedir memoria al sistema. `ejecutar notas` lo demuestra: pide una nota, la guarda en `disco/notas.txt` y la vuelve a leer.
+
+![Captura real: el programa notas lee el teclado, guarda en el disco y lee de vuelta](../capturas/procesos3.png)
 
 Límites: solo se usa el primer GiB de RAM y los programas son estáticos (sin librerías dinámicas). Esto no es todavía compatibilidad con Linux ni con `.exe`: los programas tienen que estar hechos para las llamadas de LirioOS.
 
@@ -99,5 +103,5 @@ Para probar el disco: en Almacenamiento añade un **disco duro** nuevo (VDI, uno
 ## Hoja de ruta
 
 1. Más aplicaciones reales (el explorador, el visor de imágenes y el editor ya existen): reproductor, ajustes.
-2. Más llamadas al sistema (leer del teclado y de archivos, pedir memoria) para que los programas sean útiles de verdad, y más adelante ventanas para programas.
+2. Ventanas gráficas para los programas (hoy solo escriben en el terminal) y más llamadas al sistema.
 3. Más adelante, y mucho más grande: red, audio, USB (cámara), un navegador y compatibilidad con programas de Linux.

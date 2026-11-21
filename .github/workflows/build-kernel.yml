@@ -233,11 +233,22 @@ jobs:
             sleep 4
             echo "screendump /tmp/procesos2.ppm"
             sleep 1
+            for k in l i m p i a r ret; do echo "sendkey $k"; sleep 0.3; done
+            for k in e j e c u t a r spc n o t a s ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 2
+            for k in h o l a spc m u n d o ret; do echo "sendkey $k"; sleep 0.4; done
+            sleep 3
+            echo "screendump /tmp/procesos3.ppm"
+            sleep 1
             echo "quit"
           ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -boot d -hda progs.img -m 256 -vga std -display none -monitor stdio -no-reboot
           convert /tmp/procesos.ppm ../capturas/procesos.png
           convert /tmp/procesos2.ppm ../capturas/procesos2.png
+          convert /tmp/procesos3.ppm ../capturas/procesos3.png
           fsck.vfat -n progs.img
+          mtype -i progs.img ::NOTAS.TXT | tee /tmp/notas.txt
+          grep -q "hola mundo" /tmp/notas.txt
+          python3 ../tools/check_fat32.py progs.img
 
       - name: Probar la multitarea (varios programas a la vez)
         working-directory: kernel

@@ -50,12 +50,15 @@ struct task {
     int killed;                                     /* lo detuvo el usuario con 'matar' */
     u32 fvec, faddr, feip;
     u32 start;                                      /* tic en que empezó */
+    u32 brk;                                        /* fin de su montón (sbrk) */
+    u32 keyq[16], kq_h, kq_n;                       /* teclas pulsadas que aún no ha leído */
     char name[16];
 };
 static struct task tasks[MAX_TASKS];                /* tasks[0] es el kernel (escritorio y terminal) */
 static u32 cur_t;                                   /* índice del proceso que se ejecuta */
 static struct task *proc_cur;                       /* el proceso de usuario actual, o 0 si es el kernel */
 static u32 next_pid = 1;
+static u32 kbd_focus;                               /* programa que recibe el teclado (0 = el terminal) */
 
 static const char *proc_err;                        /* por qué no se pudo lanzar */
 
@@ -73,6 +76,7 @@ static u32 proc_spawn(const char *name, const u8 *img, u32 len)
     proc_err = "sin modo usuario en este entorno";
     return 0;
 }
+static int proc_key(u32 c) { (void)c; return 0; }
 static void sched_idle(void) { }
 static void sched_reap(void) { }
 static int proc_kill(u32 pid) { (void)pid; return 0; }
@@ -286,10 +290,22 @@ static int proc_kill(u32 pid)
             tasks[i].killed = 1;
             irq_off();
             tasks[i].state = T_ZOMBIE;
+            if (kbd_focus == i) kbd_focus = 0;
             irq_on();
             return 1;
         }
     return 0;
+}
+
+/* El terminal le pasa cada tecla; devuelve 1 si un programa se la queda. Esc detiene al programa. */
+static int proc_key(u32 c)
+{
+    if (!kbd_focus) return 0;
+    struct task *t = &tasks[kbd_focus];
+    if (t->state != T_READY && t->state != T_SLEEP) { kbd_focus = 0; return 0; }
+    if (c == 27) { proc_kill(t->pid); return 1; }
+    if (c < 0x100 && t->kq_n < 16) { t->keyq[(t->kq_h + t->kq_n) % 16] = c; t->kq_n++; }
+    return 1;
 }
 
 static void proc_list(void)
@@ -317,6 +333,7 @@ static void proc_list(void)
 static void task_die(void)
 {
     proc_cur->state = T_ZOMBIE;
+    if (kbd_focus == cur_t) kbd_focus = 0;
     schedule();
     for (;;) __asm__ volatile ("hlt");
 }
@@ -345,8 +362,64 @@ void exception_handler(struct exc_frame *f)
     for (;;) __asm__ volatile ("cli; hlt");
 }
 
+/* Copia un texto terminado en 0 desde memoria del programa (hasta max-1 bytes); 0 si no es válido */
+static int user_cstr(u32 p, char *out, u32 max)
+{
+    for (u32 i = 0; i + 1 < max; i++) {
+        if (!user_range_ok(p + i, 1)) return 0;
+        out[i] = ((const char *)p)[i];
+        if (!out[i]) return 1;
+    }
+    return 0;
+}
+
+#define FILE_MAX 65536u
+
+static int sys_leer_archivo(u32 upath, u32 ubuf, u32 max)
+{
+    char name[PATH_MAX], full[PATH_MAX];
+    if (max > FILE_MAX || !user_cstr(upath, name, sizeof(name)) || !path_resolve(name, full)) return -1;
+    if (max && !user_range_ok(ubuf, max)) return -1;
+    u32 len = 0;
+    if (is_disk(full)) {
+        u8 *tmp = (u8 *)kmalloc(max ? max : 1);
+        if (!tmp) return -1;
+        if (!fat_read_file(disk_rel(full), tmp, max, &len)) { kfree(tmp); return -1; }
+        for (u32 i = 0; i < len; i++) ((u8 *)ubuf)[i] = tmp[i];
+        kfree(tmp);
+    } else {
+        const struct ramfs_file *r = fs_file(full);
+        if (!r || r->img) return -1;
+        len = slen(r->data);
+        if (len > max) len = max;
+        for (u32 i = 0; i < len; i++) ((u8 *)ubuf)[i] = (u8)r->data[i];
+    }
+    return (int)len;
+}
+
+static int sys_escribir_archivo(u32 upath, u32 udata, u32 len)
+{
+    char name[PATH_MAX], full[PATH_MAX];
+    if (len > FILE_MAX || !user_cstr(upath, name, sizeof(name)) || !path_resolve(name, full)) return -1;
+    if (len && !user_range_ok(udata, len)) return -1;
+    u8 *tmp = (u8 *)kmalloc(len + 1);
+    if (!tmp) return -1;
+    for (u32 i = 0; i < len; i++) tmp[i] = ((const u8 *)udata)[i];
+    tmp[len] = 0;
+    int ok;
+    if (is_disk(full)) {
+        ok = fat_ready && fat_write_file(disk_rel(full), tmp, len);
+        disk_forget();
+    } else {
+        ok = fs_write(full, (const char *)tmp);
+    }
+    kfree(tmp);
+    return ok ? 0 : -1;
+}
+
 /* int 0x80: eax = número de llamada, ebx y ecx = argumentos; el resultado vuelve en eax.
- *   1 salir(código)   2 escribir(texto, largo)   3 ticks()   4 dormir(ticks)   5 pid() */
+ *   1 salir(código)   2 escribir(texto, largo)   3 ticks()   4 dormir(ticks)   5 pid()
+ *   6 leer_tecla()   7 leer_archivo(ruta, buf, max)   8 escribir_archivo(ruta, datos, largo)   9 sbrk(bytes) */
 void syscall_handler(struct exc_frame *f)
 {
     switch (f->eax) {
@@ -380,9 +453,33 @@ void syscall_handler(struct exc_frame *f)
     case 5:
         f->eax = proc_cur->pid;
         break;
+    case 6: {                                       /* leer_tecla: espera a que se pulse una */
+        kbd_focus = cur_t;
+        while (proc_cur->kq_n == 0) {
+            proc_cur->wake = ticks + 1;
+            proc_cur->state = T_SLEEP;
+            schedule();
+        }
+        f->eax = proc_cur->keyq[proc_cur->kq_h];
+        proc_cur->kq_h = (proc_cur->kq_h + 1) % 16;
+        proc_cur->kq_n--;
+        break;
+    }
+    case 7: f->eax = (u32)sys_leer_archivo(f->ebx, f->ecx, f->edx); break;
+    case 8: f->eax = (u32)sys_escribir_archivo(f->ebx, f->ecx, f->edx); break;
+    case 9: {                                       /* sbrk: amplía el montón del programa */
+        u32 old = proc_cur->brk, nw = old + f->ebx;
+        if (nw < old || nw > USER_STACK_BOTTOM) { f->eax = (u32)-1; break; }
+        for (u32 a = old & ~0xFFFu; a < nw; a += PAGE_SIZE)
+            if (!vm_map(proc_cur, a)) { f->eax = (u32)-1; goto done; }
+        proc_cur->brk = nw;
+        f->eax = old;
+        break;
+    }
     default:
         f->eax = (u32)-1;
     }
+done:;
 }
 
 /* ---------- Lanzar un programa ---------- */
@@ -422,6 +519,10 @@ static u32 proc_spawn(const char *name, const u8 *img, u32 len)
     }
     for (u32 a = USER_STACK_BOTTOM; a < USER_END; a += PAGE_SIZE)
         if (!vm_map(p, a)) goto nomem;
+    p->brk = 0;
+    for (u32 s = 0; s < n; s++)
+        if (seg[s].vaddr + seg[s].memsz > p->brk) p->brk = seg[s].vaddr + seg[s].memsz;
+    p->kq_h = p->kq_n = 0;
 
     {   /* pila de kernel inicial: switch_to "vuelve" a task_start, que salta al anillo 3 */
         u32 *sp = (u32 *)(p->kstack + KSTACK_PAGES * PAGE_SIZE);

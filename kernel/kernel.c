@@ -96,6 +96,7 @@ static u32 kbd_byte(u8 sc)
     if (code == 0x2A || code == 0x36) { shift = !released; return 0; }
     if (released) return 0;
     if (code == 0x3A) { caps ^= 1; return 0; }
+    if (code == 0x01) return 27;         /* Esc */
     if (code >= KEYS) return 0;
 
     u8 c;
@@ -401,7 +402,7 @@ static void banner(void)
     con_print(" | |   | | '__| |/ _ \\  | | | \\___ \\ \n", ATTR_PROMPT);
     con_print(" | |___| | |  | | (_) | | |_| |___) |\n", ATTR_PROMPT);
     con_print(" |_____|_|_|  |_|\\___/   \\___/|____/ \n\n", ATTR_PROMPT);
-    con_print("LirioOS kernel 0.13 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
+    con_print("LirioOS kernel 0.14 - escribe 'ayuda' para ver los comandos\n\n", ATTR_SOFT);
 }
 
 /* Escribe 'v' como 8 cifras hexadecimales */
@@ -807,11 +808,11 @@ static void run_command(const char *line)
     } else if (str_eq(cmd, "whoami")) {
         con_print("lirio\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "uname")) {
-        con_print("LirioOS 0.13 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
+        con_print("LirioOS 0.14 - kernel propio, x86 de 32 bits\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "clear") || str_eq(cmd, "limpiar")) {
         con_clear();
     } else if (str_eq(cmd, "about")) {
-        con_print("LirioOS 0.13 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
+        con_print("LirioOS 0.14 - kernel propio en C, modo gráfico, ratón, ventanas y sistema de archivos en memoria.\n", ATTR_NORMAL);
     } else if (str_eq(cmd, "reboot") || str_eq(cmd, "reiniciar")) {
         outb(0x64, 0xFE);
     } else if (str_eq(cmd, "halt") || str_eq(cmd, "apagar")) {
@@ -967,6 +968,7 @@ void kmain(u32 magic, u32 info)
                 sched_idle();                          /* deja su turno a los programas, o duerme hasta la siguiente interrupción */
                 continue;
             }
+            if (proc_key(c)) continue;                /* un programa que lee el teclado se queda con las teclas (Esc lo detiene) */
             if (gui_key(c)) continue;                 /* con el editor abierto, las teclas son para él */
             if (c == KEY_UP || c == KEY_DOWN) {
                 if (c == KEY_UP && hpos > 0) hpos--;
