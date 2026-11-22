@@ -194,14 +194,16 @@ static void iq_push(u16 v)
 /* IRQ 1: llegó una tecla */
 void kbd_irq(void)
 {
-    iq_push(inb(0x60));
+    /* Solo se lee si el controlador tiene de verdad un byte del teclado: si 'input_poll' ya se lo llevó,
+     * leer otra vez devolvería el mismo byte y la tecla saldría repetida. */
+    if ((inb(0x64) & 0x21) == 0x01) iq_push(inb(0x60));
     outb(0x20, 0x20);
 }
 
 /* IRQ 12: llegó un byte del ratón (hay que avisar al PIC esclavo y al maestro) */
 void mouse_irq(void)
 {
-    iq_push((u16)(inb(0x60) | 0x100));
+    if ((inb(0x64) & 0x21) == 0x21) iq_push((u16)(inb(0x60) | 0x100));
     outb(0xA0, 0x20);
     outb(0x20, 0x20);
 }
