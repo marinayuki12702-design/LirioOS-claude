@@ -17,6 +17,8 @@
 
 #include "elf.h"
 
+typedef short s16;
+
 #define USER_BASE          0x40000000u
 #define USER_END           0x40400000u
 #define USER_STACK_PAGES   16u
@@ -264,9 +266,20 @@ static void task_free(struct task *t)
 /* Recoge los procesos terminados: libera su memoria y avisa en el terminal. Solo la llama el kernel (proceso 0). */
 static void sched_reap(void)
 {
+    int changed = 0;
+    for (int w = 0; w < UW_MAX; w++)                /* ventanas cerradas con el botón: se detiene a su programa */
+        if (uw[w].used && uw[w].want_close) {
+            struct task *o = &tasks[uw[w].owner];
+            if (o->state == T_READY || o->state == T_SLEEP) { o->killed = 1; o->state = T_ZOMBIE; if (kbd_focus == uw[w].owner) kbd_focus = 0; }
+            uw_destroy(w);
+            changed = 1;
+        }
     for (u32 i = 1; i < MAX_TASKS; i++) {
         struct task *t = &tasks[i];
         if (t->state != T_ZOMBIE) continue;
+        for (int w = 0; w < UW_MAX; w++)
+            if (uw[w].used && uw[w].owner == i) { uw_destroy(w); changed = 1; }
+        if (changed) { uw_refresh(); changed = 0; }
         con_print("[pid ", ATTR_SOFT); put_num(t->pid, ATTR_SOFT);
         if (t->killed) {
             con_print("] detenido por el usuario\n", ATTR_SOFT);
@@ -280,6 +293,7 @@ static void sched_reap(void)
         }
         task_free(t);
     }
+    if (changed) uw_refresh();
 }
 
 /* Quita un proceso del medio: 'matar'. Nunca es el que se está ejecutando (lo llama el kernel). */
@@ -300,6 +314,11 @@ static int proc_kill(u32 pid)
 /* El terminal le pasa cada tecla; devuelve 1 si un programa se la queda. Esc detiene al programa. */
 static int proc_key(u32 c)
 {
+    int top = top_visible();
+    if (top >= 2) {                                 /* la ventana de un programa está delante: las teclas son suyas */
+        uw_event(top - 2, 1, c, 0, 0);
+        return 1;
+    }
     if (!kbd_focus) return 0;
     struct task *t = &tasks[kbd_focus];
     if (t->state != T_READY && t->state != T_SLEEP) { kbd_focus = 0; return 0; }
@@ -417,8 +436,15 @@ static int sys_escribir_archivo(u32 upath, u32 udata, u32 len)
     return ok ? 0 : -1;
 }
 
+/* ¿Es 'id' una ventana abierta por el programa actual? */
+static int uw_mine(u32 id)
+{
+    return id < UW_MAX && uw[id].used && uw[id].owner == cur_t;
+}
+
 /* int 0x80: eax = número de llamada, ebx y ecx = argumentos; el resultado vuelve en eax.
  *   1 salir(código)   2 escribir(texto, largo)   3 ticks()   4 dormir(ticks)   5 pid()
+ *   10 ventana_crear  11 ventana_rect  12 ventana_texto  13 ventana_mostrar  14 ventana_evento (ventanas gráficas)
  *   6 leer_tecla()   7 leer_archivo(ruta, buf, max)   8 escribir_archivo(ruta, datos, largo)   9 sbrk(bytes) */
 void syscall_handler(struct exc_frame *f)
 {
@@ -474,6 +500,43 @@ void syscall_handler(struct exc_frame *f)
             if (!vm_map(proc_cur, a)) { f->eax = (u32)-1; goto done; }
         proc_cur->brk = nw;
         f->eax = old;
+        break;
+    }
+    case 10: {                                      /* ventana_crear(ancho, alto, titulo) */
+        char title[28];
+        if (!user_cstr(f->edx, title, sizeof(title))) { f->eax = (u32)-1; break; }
+        f->eax = (u32)uw_create((s32)f->ebx, (s32)f->ecx, title, cur_t);
+        if ((int)f->eax >= 0) uw_refresh();
+        break;
+    }
+    case 11:                                        /* ventana_rect(id, x<<16|y, ancho<<16|alto, color) */
+        if (!uw_mine(f->ebx)) { f->eax = (u32)-1; break; }
+        uw_rect((int)f->ebx, (s16)(f->ecx >> 16), (s16)(f->ecx & 0xFFFF), (s16)(f->edx >> 16), (s16)(f->edx & 0xFFFF), f->esi);
+        f->eax = 0;
+        break;
+    case 12: {                                      /* ventana_texto(id, x<<16|y, texto, color, escala) */
+        char txt[128];
+        if (!uw_mine(f->ebx) || !user_cstr(f->edx, txt, sizeof(txt))) { f->eax = (u32)-1; break; }
+        uw_text((int)f->ebx, (s16)(f->ecx >> 16), (s16)(f->ecx & 0xFFFF), txt, f->esi, f->edi == 2 ? 2 : 1);
+        f->eax = 0;
+        break;
+    }
+    case 13:                                        /* ventana_mostrar(id): vuelve a dibujar el escritorio */
+        if (!uw_mine(f->ebx)) { f->eax = (u32)-1; break; }
+        uw_refresh();
+        f->eax = 0;
+        break;
+    case 14: {                                      /* ventana_evento(id, buf[4], esperar) */
+        int id = (int)f->ebx;
+        if (!uw_mine(f->ebx) || !user_range_ok(f->ecx, 16)) { f->eax = (u32)-1; break; }
+        for (;;) {
+            if (uw_pop(id, (u32 *)f->ecx)) { f->eax = 1; break; }
+            if (!f->edx) { f->eax = 0; break; }
+            proc_cur->wake = ticks + 1;
+            proc_cur->state = T_SLEEP;
+            schedule();
+            if (!uw_mine((u32)id)) { f->eax = (u32)-1; break; }
+        }
         break;
     }
     default:

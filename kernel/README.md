@@ -63,11 +63,11 @@ Kernel propio, escrito en C y ensamblador para x86 de 32 bits. Arranca con GRUB 
 | `font.h` | Fuente 8x16 Latin-1 generada a partir de DejaVu Sans Mono (licencia libre) |
 | `gui_preview.c` | Genera una imagen del escritorio en un PC normal |
 
-## Programas, modo usuario y multitarea (0.14)
+## Programas, modo usuario y multitarea (0.15)
 
 El kernel ya puede ejecutar programas **fuera del kernel**, en el anillo 3 del procesador. Cada programa recibe su propia memoria privada (0x40000000-0x403FFFFF) mediante paginación y no puede leer ni escribir la del kernel: si lo intenta, el procesador lanza una excepción y el kernel lo detiene sin caerse (`ejecutar falla` lo demuestra). Los programas son ejecutables **ELF de 32 bits**, el mismo formato que usa Linux.
 
-- `programas` lista los programas incluidos (`hola`, `falla`, `contar`, `bucle` y `notas`, código en `user/`).
+- `programas` lista los programas incluidos (`hola`, `falla`, `contar`, `bucle`, `notas`, `pintar` y `reloj`, código en `user/`).
 - `ejecutar hola` ejecuta uno incluido; `ejecutar disco/hola.elf` carga un `.elf` de la carpeta `disco`.
 - Llamadas al sistema (`int 0x80`, número en `eax`, argumentos en `ebx`/`ecx`/`edx`): 1 `salir`, 2 `escribir`, 3 `ticks`, 4 `dormir`, 5 `pid`, 6 `leer_tecla`, 7 `leer_archivo`, 8 `escribir_archivo`, 9 `pedir_memoria` (sbrk). Los programas se escriben sin libc con `user/lirio.h`; mira `user/hola.c`.
 - Para crear uno nuevo: añade `user/miprograma.c`, ejecuta `make progs` dentro de `kernel/` y vuelve a compilar el kernel.
@@ -83,6 +83,12 @@ El kernel ya puede ejecutar programas **fuera del kernel**, en el anillo 3 del p
 **Teclado, archivos y memoria:** un programa que llama a `leer_tecla` recibe el teclado en lugar del terminal (Esc lo detiene). Puede leer y escribir archivos, también del disco, y pedir memoria al sistema. `ejecutar notas` lo demuestra: pide una nota, la guarda en `disco/notas.txt` y la vuelve a leer.
 
 ![Captura real: el programa notas lee el teclado, guarda en el disco y lee de vuelta](../capturas/procesos3.png)
+
+**Ventanas gráficas:** un programa puede abrir ventanas propias en el escritorio, con su marco, que se arrastran, se ponen delante al hacer clic y se cierran con el botón rojo (eso detiene al programa). El programa dibuja en su superficie con `ventana_rect` y `ventana_texto`, la enseña con `ventana_mostrar` y recibe el teclado y el ratón como eventos (`ventana_evento`). Mira `user/pintar.c` (un programa de pintar) y `user/reloj.c`.
+
+![Captura real: dos programas con ventana propia a la vez, pintar y reloj](../capturas/ventanas.png)
+
+![Captura real: tras pulsar Esc en pintar solo queda el reloj](../capturas/ventanas2.png)
 
 Límites: solo se usa el primer GiB de RAM y los programas son estáticos (sin librerías dinámicas). Esto no es todavía compatibilidad con Linux ni con `.exe`: los programas tienen que estar hechos para las llamadas de LirioOS.
 
@@ -103,5 +109,5 @@ Para probar el disco: en Almacenamiento añade un **disco duro** nuevo (VDI, uno
 ## Hoja de ruta
 
 1. Más aplicaciones reales (el explorador, el visor de imágenes y el editor ya existen): reproductor, ajustes.
-2. Ventanas gráficas para los programas (hoy solo escriben en el terminal) y más llamadas al sistema.
+2. Mover las apps del escritorio (explorador, visor, editor) a programas de usuario con ventana, y más llamadas al sistema (texto en cualquier tamaño, imágenes, portapapeles).
 3. Más adelante, y mucho más grande: red, audio, USB (cámara), un navegador y compatibilidad con programas de Linux.

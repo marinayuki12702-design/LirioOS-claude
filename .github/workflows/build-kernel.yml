@@ -279,6 +279,37 @@ jobs:
           convert /tmp/multi2.ppm ../capturas/multi2.png
           convert /tmp/multi3.ppm ../capturas/multi3.png
 
+      - name: Probar las ventanas gráficas de los programas
+        working-directory: kernel
+        run: |
+          (
+            sleep 12
+            for k in e j e c u t a r spc r e l o j ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 2
+            # clic en el terminal (queda debajo del reloj) para volver a escribir en él
+            echo "mouse_button 1"; sleep 0.3; echo "mouse_button 0"; sleep 0.5
+            for k in e j e c u t a r spc p i n t a r ret; do echo "sendkey $k"; sleep 0.3; done
+            sleep 2
+            # el ratón se lleva sobre la ventana de pintar y se dibuja una línea arrastrando
+            for i in 1 2 3 4 5; do echo "mouse_move -50 -37"; sleep 0.3; done
+            sleep 0.5
+            echo "mouse_button 1"; sleep 0.3
+            for i in 1 2 3 4 5 6 7 8; do echo "mouse_move 14 9"; sleep 0.25; done
+            echo "mouse_button 0"; sleep 0.5
+            echo "sendkey 4"; sleep 0.5
+            echo "mouse_move -60 10"; sleep 0.3
+            echo "mouse_button 1"; sleep 0.3
+            for i in 1 2 3 4 5 6 7 8; do echo "mouse_move 14 -6"; sleep 0.25; done
+            echo "mouse_button 0"; sleep 1
+            echo "screendump /tmp/ventanas.ppm"
+            sleep 1
+            echo "sendkey esc"; sleep 2
+            echo "screendump /tmp/ventanas2.ppm"
+            echo "quit"
+          ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -boot d -m 256 -vga std -display none -monitor stdio -no-reboot
+          convert /tmp/ventanas.ppm ../capturas/ventanas.png
+          convert /tmp/ventanas2.ppm ../capturas/ventanas2.png
+
       - name: Guardar las capturas en el repositorio
         if: always() && github.ref == 'refs/heads/main'
         run: |

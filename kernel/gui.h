@@ -356,6 +356,27 @@ static int term_vis = 1;            /* el terminal está a la vista */
 static int app_vis;                 /* hay una aplicación abierta */
 static int app_kind;                /* icono del dock que la abrió (1..4) */
 static int app_top;                 /* 1 = la aplicación está por encima del terminal */
+
+/* Ventanas de los programas de usuario: el programa dibuja en su propia superficie (píxeles ya empaquetados)
+ * y recibe teclas y ratón como eventos. Ids de ventana: 0 terminal, 1 aplicación, 2.. = ventanas de programas. */
+#define UW_MAX     4
+#define UW_PAD     8
+#define UW_EV_MAX  32
+struct uwin {
+    int used;
+    s32 x, y;                       /* esquina del marco (ventana completa) */
+    s32 cw, ch;                     /* tamaño de la superficie de dibujo */
+    u32 *pix;
+    u32 owner;                      /* índice del proceso dueño */
+    int want_close;                 /* el usuario pulsó cerrar */
+    char title[28];
+    u32 ev[UW_EV_MAX][4];           /* cola de eventos: tipo (1 tecla, 2 ratón), a, b, c */
+    u32 ev_h, ev_n;
+};
+static struct uwin uw[UW_MAX];
+static u8 zst[2 + UW_MAX] = { 1, 0, 2, 3, 4, 5 };   /* ventanas de abajo a arriba */
+static int zn = 2;                                  /* cuántas del vector están en uso */
+static int top_visible(void);                       /* id de la ventana visible que está delante, o -1 */
 static s32 con_px0, con_py0;
 
 /* ---------- Dock ---------- */
@@ -518,6 +539,24 @@ static int rects_overlap(s32 ax, s32 ay, s32 aw, s32 ah, s32 bx, s32 by, s32 bw,
     return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
 }
 
+static int win_visible(int w);
+static void win_geom(int w, s32 *x, s32 *y, s32 *ww, s32 *hh);
+
+/* ¿Hay alguna ventana por encima del terminal que tape esta zona? */
+static int above_term_overlaps(s32 x, s32 y, s32 w, s32 h)
+{
+    int seen = 0;
+    for (int k = 0; k < zn; k++) {
+        int id = zst[k];
+        if (id == 0) { seen = 1; continue; }
+        if (!seen || !win_visible(id)) continue;
+        s32 wx, wy, ww, hh;
+        win_geom(id, &wx, &wy, &ww, &hh);
+        if (rects_overlap(x, y, w, h, wx - 8, wy - 8, ww + 16, hh + 16)) return 1;
+    }
+    return 0;
+}
+
 /* 0 = el terminal no se ve; 1 = se puede dibujar directamente; 2 = algo lo tapa y hay que recomponer todo */
 static int con_mode(void)
 {
@@ -526,9 +565,7 @@ static int con_mode(void)
     if (con_py0 < 24) return 2;
     dock_geom(&dx, &dy, &dw, &dh);
     if (rects_overlap(con_px0, con_py0, CON_COLS * 8, CON_ROWS * 16, dx, dy - 36, dw, dh + 36)) return 2;
-    if (app_vis && app_top &&
-        rects_overlap(con_px0, con_py0, CON_COLS * 8, CON_ROWS * 16, app_x - 8, app_y - 8, app_w + 16, app_h + 16))
-        return 2;
+    if (above_term_overlaps(con_px0, con_py0, CON_COLS * 8, CON_ROWS * 16)) return 2;
     return 1;
 }
 
@@ -636,7 +673,7 @@ static void con_print(const char *s, u8 attr)
 
 static void draw_term(void)
 {
-    draw_frame(win_x, win_y, WIN_W, WIN_H, "lirio@lirioos: terminal", BODY_COLOR, !(app_vis && app_top));
+    draw_frame(win_x, win_y, WIN_W, WIN_H, "lirio@lirioos: terminal", BODY_COLOR, top_visible() == 0);
     con_px0 = win_x + 14;
     con_py0 = win_y + TITLE_H + 10;
     con_paint();
@@ -927,7 +964,7 @@ static void draw_explorer(void)
     char bar[PATH_MAX + 2];
     u32 k = 0;
 
-    draw_frame(x, y, w, h, "Archivos", APP_COLOR, app_top);
+    draw_frame(x, y, w, h, "Archivos", APP_COLOR, top_visible() == 1);
 
     int img_view = viewing && exp_is_img();
     s32 bar_x = x + 182;
@@ -1049,7 +1086,7 @@ static void draw_app(void)
 {
     if (app_kind == 1) { draw_explorer(); return; }
     const char *name = dock_names[app_kind];
-    draw_frame(app_x, app_y, app_w, app_h, name, APP_COLOR, app_top);
+    draw_frame(app_x, app_y, app_w, app_h, name, APP_COLOR, top_visible() == 1);
     draw_text(app_x + (app_w - text_width(name, 2)) / 2, app_y + 56, name, 0xFF9BD2, 2);
     for (int i = 0; i < 3; i++) {
         const char *l = app_lines[app_kind][i];
@@ -1059,6 +1096,22 @@ static void draw_app(void)
     draw_text(app_x + (app_w - text_width("Próximamente", 1)) / 2, app_y + app_h - 45, "Próximamente", 0xFFFFFF, 1);
 }
 
+/* Ventana de un programa: marco y, dentro, la superficie que dibuja el programa */
+static void draw_uwin(int i)
+{
+    struct uwin *u = &uw[i];
+    s32 ow = u->cw + 2 * UW_PAD, oh = TITLE_H + u->ch + UW_PAD;
+    draw_frame(u->x, u->y, ow, oh, u->title, BODY_COLOR, top_visible() == 2 + i);
+    for (s32 j = 0; j < u->ch; j++) {
+        s32 py = u->y + TITLE_H + j;
+        if (py < 0 || py >= fb_h) continue;
+        for (s32 k = 0; k < u->cw; k++) {
+            s32 px = u->x + UW_PAD + k;
+            if (px >= 0 && px < fb_w) fb[(u32)py * fb_pitch + (u32)px] = u->pix[(u32)j * (u32)u->cw + (u32)k];
+        }
+    }
+}
+
 /* Compone el escritorio entero en la memoria intermedia: fondo guardado + iconos + ventanas + dock */
 static void compose(void)
 {
@@ -1066,41 +1119,183 @@ static void compose(void)
     for (u32 i = 0; i < (u32)fb_w * (u32)fb_h; i++)
         back_buf[i] = wall_buf[i];
     draw_desktop_icons();
-    if (app_vis && !app_top) draw_app();
-    if (term_vis) draw_term();
-    if (app_vis && app_top) draw_app();
+    for (int k = 0; k < zn; k++) {
+        int w = zst[k];
+        if (!win_visible(w)) continue;
+        if (w == 0) draw_term();
+        else if (w == 1) draw_app();
+        else draw_uwin(w - 2);
+    }
     draw_dock();
     draw_topbar();
 }
 
-/* Ventana 0 = terminal, 1 = aplicación */
-static int win_visible(int w) { return w == 0 ? term_vis : app_vis; }
+/* Ventana 0 = terminal, 1 = aplicación, 2.. = ventanas de programas */
+static int win_visible(int w)
+{
+    if (w == 0) return term_vis;
+    if (w == 1) return app_vis;
+    return uw[w - 2].used;
+}
 
 static void win_geom(int w, s32 *x, s32 *y, s32 *ww, s32 *hh)
 {
-    if (w == 0) { *x = win_x; *y = win_y; *ww = WIN_W; *hh = WIN_H; }
-    else        { *x = app_x; *y = app_y; *ww = app_w; *hh = app_h; }
+    if (w == 0)      { *x = win_x; *y = win_y; *ww = WIN_W; *hh = WIN_H; }
+    else if (w == 1) { *x = app_x; *y = app_y; *ww = app_w; *hh = app_h; }
+    else {
+        struct uwin *u = &uw[w - 2];
+        *x = u->x; *y = u->y; *ww = u->cw + 2 * UW_PAD; *hh = TITLE_H + u->ch + UW_PAD;
+    }
 }
 
 static void win_set_pos(int w, s32 x, s32 y)
 {
-    if (w == 0) { win_x = x; win_y = y; }
-    else        { app_x = x; app_y = y; }
+    if (w == 0)      { win_x = x; win_y = y; }
+    else if (w == 1) { app_x = x; app_y = y; }
+    else             { uw[w - 2].x = x; uw[w - 2].y = y; }
 }
 
 static void win_default(int w)
 {
-    if (w == 0) win_set_pos(0, (fb_w - WIN_W) / 2, 44);
-    else        win_set_pos(1, (fb_w - app_w) / 2 + 60, 100);
+    if (w == 0)      win_set_pos(0, (fb_w - WIN_W) / 2, 44);
+    else if (w == 1) win_set_pos(1, (fb_w - app_w) / 2 + 60, 100);
+    else             win_set_pos(w, 140 + 36 * (w - 2), 70 + 36 * (w - 2));
 }
 
 static void win_hide(int w)
 {
-    if (w == 0) term_vis = 0;
-    else        app_vis = 0;
+    if (w == 0)      term_vis = 0;
+    else if (w == 1) app_vis = 0;
+    else             uw[w - 2].want_close = 1;      /* el kernel detendrá al programa y quitará la ventana */
 }
 
-static void win_raise(int w) { app_top = (w == 1); }
+static int top_visible(void)
+{
+    for (int k = zn - 1; k >= 0; k--)
+        if (win_visible(zst[k])) return zst[k];
+    return -1;
+}
+
+static void win_raise(int w)
+{
+    int k = 0;
+    while (k < zn && zst[k] != w) k++;
+    if (k == zn) {                                  /* aún no estaba en la pila */
+        if (zn >= 2 + UW_MAX) return;
+        zst[zn++] = (u8)w;
+    } else {
+        for (; k + 1 < zn; k++) zst[k] = zst[k + 1];
+        zst[zn - 1] = (u8)w;
+    }
+    int pos0 = 0, pos1 = 0;                         /* app_top: ¿la aplicación está por encima del terminal? */
+    for (int j = 0; j < zn; j++) { if (zst[j] == 0) pos0 = j; if (zst[j] == 1) pos1 = j; }
+    app_top = pos1 > pos0;
+}
+
+/* Ventana visible más alta en el punto (px, py), o -1 */
+static int win_at(s32 px, s32 py)
+{
+    for (int k = zn - 1; k >= 0; k--) {
+        s32 x, y, ww, hh;
+        int w = zst[k];
+        if (!win_visible(w)) continue;
+        win_geom(w, &x, &y, &ww, &hh);
+        if (px >= x && px < x + ww && py >= y && py < y + hh) return w;
+    }
+    return -1;
+}
+
+/* ---------- Ventanas de programas: creación y dibujo ---------- */
+
+static int uw_create(s32 cw, s32 ch, const char *title, u32 owner)
+{
+    if (cw < 64 || ch < 32 || cw > 640 || ch > 480) return -1;
+    for (int i = 0; i < UW_MAX; i++) {
+        struct uwin *u = &uw[i];
+        if (u->used) continue;
+        u->pix = (u32 *)kmalloc((u32)(cw * ch) * 4u);
+        if (!u->pix) return -1;
+        u32 bg = pack(BODY_COLOR);
+        for (s32 k = 0; k < cw * ch; k++) u->pix[k] = bg;
+        u->cw = cw; u->ch = ch;
+        u->owner = owner;
+        u->want_close = 0;
+        u->ev_h = u->ev_n = 0;
+        int n = 0;
+        while (title[n] && n < 27) { u->title[n] = title[n]; n++; }
+        u->title[n] = 0;
+        u->used = 1;
+        win_default(2 + i);
+        win_raise(2 + i);
+        return i;
+    }
+    return -1;
+}
+
+static void uw_destroy(int i)
+{
+    struct uwin *u = &uw[i];
+    if (!u->used) return;
+    u->used = 0;
+    kfree(u->pix);
+    u->pix = 0;
+    int k = 0;
+    while (k < zn && zst[k] != 2 + i) k++;
+    if (k < zn) {                                   /* sale de la pila de ventanas (queda al final, sin usar) */
+        for (; k + 1 < zn; k++) zst[k] = zst[k + 1];
+        zst[zn - 1] = (u8)(2 + i);
+    }
+}
+
+/* Dibuja dentro de la superficie de la ventana: se redirige el destino de dibujo mientras dura */
+static void uw_rect(int i, s32 x, s32 y, s32 w, s32 h, u32 rgb)
+{
+    struct uwin *u = &uw[i];
+    volatile u32 *sfb = fb; u32 sp = fb_pitch; s32 sw = fb_w, sh = fb_h;
+    fb = u->pix; fb_pitch = (u32)u->cw; fb_w = u->cw; fb_h = u->ch;
+    fill_rect(x, y, w, h, rgb, 255);
+    fb = sfb; fb_pitch = sp; fb_w = sw; fb_h = sh;
+}
+
+static void uw_text(int i, s32 x, s32 y, const char *s, u32 rgb, s32 scale)
+{
+    struct uwin *u = &uw[i];
+    volatile u32 *sfb = fb; u32 sp = fb_pitch; s32 sw = fb_w, sh = fb_h;
+    fb = u->pix; fb_pitch = (u32)u->cw; fb_w = u->cw; fb_h = u->ch;
+    draw_text(x, y, s, rgb, scale);
+    fb = sfb; fb_pitch = sp; fb_w = sw; fb_h = sh;
+}
+
+static void uw_event(int i, u32 type, u32 a, u32 b, u32 c)
+{
+    struct uwin *u = &uw[i];
+    if (!u->used) return;
+    if (type == 2 && u->ev_n) {                     /* un movimiento nuevo sustituye al anterior sin enviar */
+        u32 *last = u->ev[(u->ev_h + u->ev_n - 1) % UW_EV_MAX];
+        if (last[0] == 2 && last[3] == c) { last[1] = a; last[2] = b; return; }
+    }
+    if (u->ev_n >= UW_EV_MAX) return;
+    u32 *e = u->ev[(u->ev_h + u->ev_n) % UW_EV_MAX];
+    e[0] = type; e[1] = a; e[2] = b; e[3] = c;
+    u->ev_n++;
+}
+
+static int uw_pop(int i, u32 *out)
+{
+    struct uwin *u = &uw[i];
+    if (!u->used || !u->ev_n) return 0;
+    const u32 *e = u->ev[u->ev_h];
+    for (int k = 0; k < 4; k++) out[k] = e[k];
+    u->ev_h = (u->ev_h + 1) % UW_EV_MAX;
+    u->ev_n--;
+    return 1;
+}
+
+static void uw_refresh(void)
+{
+    compose();
+    present();
+}
 
 static int in_circle(s32 px, s32 py, s32 cx, s32 cy, s32 r)
 {
@@ -1128,7 +1323,7 @@ static void draw_desktop(void)
 /* Teclado para el editor: devuelve 1 si la tecla era para él (ventana de Archivos delante y editando) */
 static int gui_key(u32 c)
 {
-    if (!(app_vis && app_top && app_kind == 1 && exp_editing)) return 0;
+    if (!(top_visible() == 1 && app_kind == 1 && exp_editing)) return 0;
     if (c == '\b') {
         while (ed_len > 0 && (((u8)ed_buf[ed_len - 1]) & 0xC0) == 0x80) ed_len--;
         if (ed_len > 0) ed_len--;
@@ -1156,7 +1351,7 @@ static int gui_key(u32 c)
 /* Se llama cuando no hay nada que hacer: hace parpadear el cursor del editor */
 static void gui_tick(void)
 {
-    if (!(app_vis && app_top && app_kind == 1 && exp_editing)) return;
+    if (!(top_visible() == 1 && app_kind == 1 && exp_editing)) return;
     int on = ((ticks - ed_key_tick) / 50) % 2 == 0;
     if (on != ed_shown) {
         compose();                                      /* al dibujar, ed_shown se actualiza */
@@ -1186,17 +1381,19 @@ static void dock_click(int i)
 {
     if (i == 0) {
         if (!term_vis)                       { term_vis = 1; win_raise(0); }
-        else if (!(app_vis && app_top))      { term_vis = 0; }     /* ya estaba delante: se esconde */
+        else if (top_visible() == 0)         { term_vis = 0; }     /* ya estaba delante: se esconde */
         else                                 { win_raise(0); }
     } else if (app_vis && app_kind == i) {
-        if (app_top) app_vis = 0;
-        else         win_raise(1);
+        if (top_visible() == 1) app_vis = 0;
+        else                    win_raise(1);
     } else {
         open_app(i);
     }
 }
 
 static int drag_on, left_before, drag_win;
+static int uw_grab = -1;               /* ventana de programa que tiene el ratón pulsado */
+static int uw_sent;                    /* ya se envió un evento de ratón en este movimiento */
 static s32 drag_dx, drag_dy;
 
 /* Movimiento del ratón (dx, dy en píxeles; botones: bit 0 = izquierdo) */
@@ -1216,7 +1413,7 @@ static void gui_mouse(s32 dx, s32 dy, u8 buttons)
         dock_hover = hv;
         redraw = 1;
     }
-    int et = (app_vis && app_top) ? exp_target(nx, ny) : -1;
+    int et = (top_visible() == 1) ? exp_target(nx, ny) : -1;
     if (et != exp_hover) {
         exp_hover = et;
         redraw = 1;
@@ -1228,8 +1425,8 @@ static void gui_mouse(s32 dx, s32 dy, u8 buttons)
             redraw = 1;
         } else {
             int consumed = 0;
-            for (int k = 0; k < 2; k++) {                  /* de la ventana de arriba a la de abajo */
-                int w = (k == 0) ? (app_top ? 1 : 0) : (app_top ? 0 : 1);
+            for (int k = zn - 1; k >= 0; k--) {                /* de la ventana de arriba a la de abajo */
+                int w = zst[k];
                 s32 x, y, ww, hh;
                 if (!win_visible(w)) continue;
                 win_geom(w, &x, &y, &ww, &hh);
@@ -1247,8 +1444,13 @@ static void gui_mouse(s32 dx, s32 dy, u8 buttons)
                         drag_dy = ny - y;
                         win_raise(w);
                     }
+                } else if (w >= 2) {                           /* clic dentro de la ventana de un programa */
+                    win_raise(w);
+                    uw_grab = w - 2;
+                    uw_event(w - 2, 2, (u32)(nx - x - UW_PAD), (u32)(ny - y - TITLE_H), 1);
+                    uw_sent = 1;
                 } else {
-                    int was_top = (w == (app_top ? 1 : 0));
+                    int was_top = (top_visible() == w);
                     win_raise(w);
                     if (w == 1 && was_top) {               /* el clic llega a lo que haya dentro */
                         int t = exp_target(nx, ny);
@@ -1266,6 +1468,23 @@ static void gui_mouse(s32 dx, s32 dy, u8 buttons)
         }
     }
     if (!left) drag_on = 0;
+
+    /* Eventos de ratón para el programa: mientras se mantiene pulsado, o al pasar por encima */
+    if (!uw_sent) {
+        int g = uw_grab;
+        if (g < 0 && !left && !left_before && !drag_on) {
+            int w = win_at(nx, ny);
+            if (w >= 2) {
+                s32 x, y, ww, hh;
+                win_geom(w, &x, &y, &ww, &hh);
+                if (ny >= y + TITLE_H && dx | dy) uw_event(w - 2, 2, (u32)(nx - x - UW_PAD), (u32)(ny - y - TITLE_H), 0);
+            }
+        } else if (g >= 0 && uw[g].used && (left || left_before) && (dx | dy | (left != left_before))) {
+            uw_event(g, 2, (u32)(nx - uw[g].x - UW_PAD), (u32)(ny - uw[g].y - TITLE_H), (u32)left);
+        }
+    }
+    if (!left) uw_grab = -1;
+    uw_sent = 0;
     left_before = left;
 
     if (drag_on) {
