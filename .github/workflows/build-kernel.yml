@@ -293,7 +293,7 @@ jobs:
             for i in 1 2 3 4 5; do echo "mouse_move 0 50"; sleep 0.3; done
             echo "mouse_button 0"; sleep 0.5
             for k in e j e c u t a r spc p i n t a r ret; do echo "sendkey $k"; sleep 0.5; done
-            sleep 2
+            sleep 6
             # el ratón se lleva sobre la ventana de pintar y se dibuja una línea arrastrando
             for i in 1 2 3 4 5; do echo "mouse_move -50 -22"; sleep 0.3; done
             sleep 0.5
