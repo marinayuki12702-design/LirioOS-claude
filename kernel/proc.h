@@ -506,7 +506,7 @@ void syscall_handler(struct exc_frame *f)
         char title[28];
         if (!user_cstr(f->edx, title, sizeof(title))) { f->eax = (u32)-1; break; }
         f->eax = (u32)uw_create((s32)f->ebx, (s32)f->ecx, title, cur_t);
-        if ((int)f->eax >= 0) uw_refresh();
+        if ((int)f->eax >= 0) { irq_on(); uw_refresh(); irq_off(); }   /* redibujar tarda: no se pierden bytes del ratón */
         break;
     }
     case 11:                                        /* ventana_rect(id, x<<16|y, ancho<<16|alto, color) */
@@ -523,7 +523,9 @@ void syscall_handler(struct exc_frame *f)
     }
     case 13:                                        /* ventana_mostrar(id): vuelve a dibujar el escritorio */
         if (!uw_mine(f->ebx)) { f->eax = (u32)-1; break; }
-        uw_refresh();
+        irq_on();                                   /* redibujar tarda varios ms: con las interrupciones activas */
+        uw_refresh();                               /* (las del ratón y el teclado solo llenan una cola) */
+        irq_off();
         f->eax = 0;
         break;
     case 14: {                                      /* ventana_evento(id, buf[4], esperar) */
