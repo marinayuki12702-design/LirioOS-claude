@@ -83,8 +83,24 @@ static void px_blend(s32 x, s32 y, u32 rgb, u32 alpha)
     fb[(u32)y * fb_pitch + (u32)x] = pack(mix(old, rgb, alpha));
 }
 
+/* Rellena una fila de píxeles opacos (ya empaquetados) recortando a la pantalla: es la ruta rápida */
+static void fill_span(s32 x, s32 y, s32 w, u32 packed)
+{
+    if (y < 0 || y >= fb_h || w <= 0) return;
+    if (x < 0) { w += x; x = 0; }
+    if (x + w > fb_w) w = fb_w - x;
+    if (w <= 0) return;
+    volatile u32 *row = fb + (u32)y * fb_pitch + (u32)x;
+    for (s32 i = 0; i < w; i++) row[i] = packed;
+}
+
 static void fill_rect(s32 x, s32 y, s32 w, s32 h, u32 rgb, u32 alpha)
 {
+    if (alpha >= 255) {
+        u32 pv = pack(rgb);
+        for (s32 j = 0; j < h; j++) fill_span(x, y + j, w, pv);
+        return;
+    }
     for (s32 j = 0; j < h; j++)
         for (s32 i = 0; i < w; i++)
             px_blend(x + i, y + j, rgb, alpha);
@@ -101,6 +117,18 @@ static int in_round(s32 px, s32 py, s32 w, s32 h, s32 r)
 
 static void fill_rrect(s32 x, s32 y, s32 w, s32 h, s32 r, u32 rgb, u32 alpha)
 {
+    if (alpha >= 255 && w >= 2 * r && h >= 2 * r) {      /* solo las esquinas necesitan comprobar píxel a píxel */
+        u32 pv = pack(rgb);
+        for (s32 j = 0; j < h; j++) {
+            if (j >= r && j < h - r) { fill_span(x, y + j, w, pv); continue; }
+            for (s32 i = 0; i < r; i++) {
+                if (in_round(i, j, w, h, r)) px_set(x + i, y + j, rgb);
+                if (in_round(w - 1 - i, j, w, h, r)) px_set(x + w - 1 - i, y + j, rgb);
+            }
+            fill_span(x + r, y + j, w - 2 * r, pv);
+        }
+        return;
+    }
     for (s32 j = 0; j < h; j++)
         for (s32 i = 0; i < w; i++)
             if (in_round(i, j, w, h, r))
@@ -163,6 +191,10 @@ static void present_rect(s32 x, s32 y, s32 w, s32 h)
         s32 cj = py - mouse_y;
         const u32 *src = back_buf + (u32)py * (u32)fb_w;
         volatile u32 *dst = scr + (u32)py * scr_pitch;
+        if (cj < 0 || cj >= CUR_H || x + w <= mouse_x || x >= mouse_x + CUR_W) {   /* fila sin cursor: copia directa */
+            for (s32 i = 0; i < w; i++) dst[x + i] = src[x + i];
+            continue;
+        }
         for (s32 i = 0; i < w; i++) {
             s32 px = x + i;
             u32 v = src[px];
