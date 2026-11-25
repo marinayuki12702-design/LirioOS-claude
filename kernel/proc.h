@@ -79,6 +79,7 @@ static u32 proc_spawn(const char *name, const u8 *img, u32 len)
     return 0;
 }
 static int proc_key(u32 c) { (void)c; return 0; }
+static int launch_files(int kind) { (void)kind; return 0; }
 static void sched_idle(void) { }
 static void sched_reap(void) { }
 static int proc_kill(u32 pid) { (void)pid; return 0; }
@@ -240,6 +241,28 @@ void timer_irq(struct irq_frame *f)
     ticks++;
     outb(0x20, 0x20);                               /* fin de interrupción para el PIC */
     if ((f->cs & 3) == 3) schedule();               /* solo se quita el procesador a quien está en modo usuario */
+}
+
+static u32 proc_spawn(const char *name, const u8 *img, u32 len);
+
+/* Abre una aplicación del escritorio como programa de usuario; si ya está abierta, solo la pone delante */
+static int proc_launch_app(const char *name)
+{
+    for (u32 i = 1; i < MAX_TASKS; i++) {
+        if ((tasks[i].state != T_READY && tasks[i].state != T_SLEEP) || !str_eq(tasks[i].name, name)) continue;
+        for (int w = 0; w < UW_MAX; w++)
+            if (uw[w].used && uw[w].owner == i) { win_raise(2 + w); return 1; }
+    }
+    for (u32 i = 0; i < BUILTIN_PROGS_COUNT; i++)
+        if (str_eq(builtin_progs[i].name, name))
+            return proc_spawn(name, builtin_progs[i].data, builtin_progs[i].len) != 0;
+    return 0;
+}
+
+static int launch_files(int kind)
+{
+    (void)kind;
+    return proc_launch_app("archivos");
 }
 
 /* Para el kernel (proceso 0), cuando no tiene nada que hacer: si hay programas listos les deja su turno;
@@ -444,6 +467,7 @@ static int uw_mine(u32 id)
 
 /* int 0x80: eax = número de llamada, ebx y ecx = argumentos; el resultado vuelve en eax.
  *   1 salir(código)   2 escribir(texto, largo)   3 ticks()   4 dormir(ticks)   5 pid()
+ *   15 listar  16 info  17 ventana_imagen (archivos)
  *   10 ventana_crear  11 ventana_rect  12 ventana_texto  13 ventana_mostrar  14 ventana_evento (ventanas gráficas)
  *   6 leer_tecla()   7 leer_archivo(ruta, buf, max)   8 escribir_archivo(ruta, datos, largo)   9 sbrk(bytes) */
 void syscall_handler(struct exc_frame *f)
@@ -500,6 +524,33 @@ void syscall_handler(struct exc_frame *f)
             if (!vm_map(proc_cur, a)) { f->eax = (u32)-1; goto done; }
         proc_cur->brk = nw;
         f->eax = old;
+        break;
+    }
+    case 15: {                                      /* listar(carpeta, n, nombre[48]): 0 = no hay, 1 = archivo, 2 = carpeta */
+        char name[PATH_MAX], full[PATH_MAX], ent[48];
+        int is_dir = 0;
+        if (!user_cstr(f->ebx, name, sizeof(name)) || !path_resolve(name, full) || !user_range_ok(f->edx, 48)) { f->eax = (u32)-1; break; }
+        if (!fs_entry(full, f->ecx, ent, &is_dir)) { f->eax = 0; break; }
+        for (u32 i = 0; i < 48; i++) ((char *)f->edx)[i] = ent[i];
+        ((char *)f->edx)[47] = 0;
+        f->eax = is_dir ? 2 : 1;
+        break;
+    }
+    case 16: {                                      /* info(ruta): 0 no existe, 1 texto, 2 imagen, 3 carpeta, 4 demasiado grande */
+        char name[PATH_MAX], full[PATH_MAX];
+        if (!user_cstr(f->ebx, name, sizeof(name)) || !path_resolve(name, full)) { f->eax = (u32)-1; break; }
+        const struct ramfs_file *r = fs_file(full);
+        if (r) f->eax = r->img ? 2 : (is_disk(full) && disk_big) ? 4 : 1;
+        else f->eax = fs_is_dir(full) ? 3 : 0;
+        break;
+    }
+    case 17: {                                      /* ventana_imagen(id, x<<16|y, ancho<<16|alto, ruta) */
+        char name[PATH_MAX], full[PATH_MAX];
+        if (!uw_mine(f->ebx) || !user_cstr(f->esi, name, sizeof(name)) || !path_resolve(name, full)) { f->eax = (u32)-1; break; }
+        const struct img *im = fs_img(full);
+        if (!im) { f->eax = (u32)-1; break; }
+        uw_image((int)f->ebx, (s16)(f->ecx >> 16), (s16)(f->ecx & 0xFFFF), (s16)(f->edx >> 16), (s16)(f->edx & 0xFFFF), im);
+        f->eax = 0;
         break;
     }
     case 10: {                                      /* ventana_crear(ancho, alto, titulo) */

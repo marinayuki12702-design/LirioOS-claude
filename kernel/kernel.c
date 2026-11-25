@@ -944,6 +944,7 @@ void kmain(u32 magic, u32 info)
     print_video_info(mb);
     gdt_init();
     paging_init();
+    if (paging_ok) gui_launch = launch_files;     /* el explorador de archivos es un programa de usuario con ventana */
     interrupts_init();
 
     fat_clock = fat_stamp;

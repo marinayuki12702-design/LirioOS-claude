@@ -314,6 +314,29 @@ jobs:
           convert /tmp/ventanas.ppm ../capturas/ventanas.png
           convert /tmp/ventanas2.ppm ../capturas/ventanas2.png
 
+      - name: Probar el explorador de archivos (programa de usuario)
+        working-directory: kernel
+        run: |
+          dbl() { echo "mouse_button 1"; sleep 0.1; echo "mouse_button 0"; sleep 0.15; echo "mouse_button 1"; sleep 0.1; echo "mouse_button 0"; sleep 1; }
+          (
+            sleep 12
+            # clic en el icono "Inicio" del escritorio: abre el explorador como programa
+            for i in 1 2 3 4 5 6 7 8; do echo "mouse_move -58 -38"; sleep 0.25; done
+            sleep 0.5
+            echo "mouse_button 1"; sleep 0.2; echo "mouse_button 0"
+            sleep 6
+            echo "screendump /tmp/archivos1.ppm"
+            # doble clic en el primer elemento (a la derecha del icono y hacia abajo hasta la primera casilla)
+            for i in 1 2 3 4 5 6 7 8 9; do echo "mouse_move 18 13"; sleep 0.25; done
+            sleep 1
+            dbl
+            sleep 3
+            echo "screendump /tmp/archivos2.ppm"
+            echo "quit"
+          ) | qemu-system-i386 -cdrom LirioOS-kernel.iso -boot d -m 256 -vga std -display none -monitor stdio -no-reboot
+          convert /tmp/archivos1.ppm ../capturas/archivos1.png
+          convert /tmp/archivos2.ppm ../capturas/archivos2.png
+
       - name: Guardar las capturas en el repositorio
         if: always() && github.ref == 'refs/heads/main'
         run: |

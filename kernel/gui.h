@@ -1298,6 +1298,15 @@ static void uw_text(int i, s32 x, s32 y, const char *s, u32 rgb, s32 scale)
     fb = sfb; fb_pitch = sp; fb_w = sw; fb_h = sh;
 }
 
+static void uw_image(int i, s32 x, s32 y, s32 bw, s32 bh, const struct img *im)
+{
+    struct uwin *u = &uw[i];
+    volatile u32 *sfb = fb; u32 sp = fb_pitch; s32 sw = fb_w, sh = fb_h;
+    fb = u->pix; fb_pitch = (u32)u->cw; fb_w = u->cw; fb_h = u->ch;
+    draw_image_fit(im, x, y, bw, bh);
+    fb = sfb; fb_pitch = sp; fb_w = sw; fb_h = sh;
+}
+
 static void uw_event(int i, u32 type, u32 a, u32 b, u32 c)
 {
     struct uwin *u = &uw[i];
@@ -1391,8 +1400,11 @@ static void gui_tick(void)
     }
 }
 
+static int (*gui_launch)(int kind);     /* si existe, abre la aplicación como programa de usuario (devuelve 1 si lo hizo) */
+
 static void open_app(int kind)
 {
+    if (kind == 1 && gui_launch && gui_launch(kind)) return;
     app_kind = kind;
     app_vis = 1;
     app_w = (kind == 1) ? 580 : 460;
